@@ -51,36 +51,70 @@ llm:
 # -----------------------------------------------------------------------------
 # Tool Settings
 # -----------------------------------------------------------------------------
-# Configuration for available tools and their behavior
+# Configuration for the comprehensive tool management system
 tools:
-  # List of enabled tools (can be modified to disable specific tools)
-  enabled:
-    - "file_reader"                   # Read file contents
-    - "file_writer"                   # Write/modify files
-    - "directory_lister"              # List directory contents
-    - "code_analyzer"                 # Analyze code structure (future)
-    - "git_operations"                # Git integration (future)
-  
-  # File operation settings
-  file_operations:
-    max_file_size_mb: 10              # Maximum file size to process (integer)
-    allowed_extensions:               # File extensions that can be processed
-      - ".py"                         # Python files
-      - ".js"                         # JavaScript files
-      - ".ts"                         # TypeScript files
-      - ".md"                         # Markdown files
-      - ".txt"                        # Text files
-      - ".yaml"                       # YAML files
-      - ".yml"                        # YAML files (alternative extension)
-      - ".json"                       # JSON files
-      - ".toml"                       # TOML files
-      - ".ini"                        # INI configuration files
-      - ".cfg"                        # Configuration files
+  # Tool discovery and registration
+  discovery:
+    auto_discover_builtin: true       # Automatically discover built-in tools
+    plugin_directories: []            # Additional directories to scan for plugin tools
+    scan_on_startup: true            # Scan for tools during application startup
+    rescan_interval: 300             # Rescan interval in seconds (5 minutes)
     
-    # Backup settings
-    create_backups: true              # Create backups before modifying files
+  # Tool execution configuration
+  execution:
+    default_timeout_seconds: 30       # Default timeout for tool execution
+    max_concurrent_tools: 3           # Maximum number of tools executing concurrently
+    retry_failed_executions: false   # Whether to retry failed tool executions
+    max_retries: 2                   # Maximum number of retries for failed executions
+    retry_delay_seconds: 1.0         # Delay between retries
+    enable_execution_tracking: true  # Track tool execution history and metrics
+    enable_performance_monitoring: true # Monitor tool performance and log slow executions
+    max_execution_history: 1000      # Maximum number of execution records to keep
+    
+  # Security and safety settings
+  security:
+    allowed_paths:                    # Paths where tools are allowed to operate
+      - "./"                          # Current directory
+      - "~/projects/"                # User projects directory
+      - "~/Documents/"               # User documents
+    restricted_paths:                 # Paths that tools cannot access
+      - "/etc"                        # System configuration
+      - "/usr/bin"                    # System binaries
+      - "/System"                     # macOS system directory
+      - "/Windows"                    # Windows system directory
+      - "/private"                    # macOS private directory
+    max_file_size_mb: 100            # Maximum file size for tool operations
+    require_confirmation_for:         # Security levels requiring confirmation
+      - "dangerous"                   # Tools marked as dangerous security level
+    
+  # MCP (Model Context Protocol) integration settings
+  mcp:
+    enabled: false                    # Enable MCP tool integration (future feature)
+    auto_discover_servers: false     # Automatically discover MCP servers
+    trusted_servers: []              # List of trusted MCP server URLs
+    server_timeout_seconds: 10       # Timeout for MCP server communication
+    max_tools_per_server: 50         # Maximum tools to load from each MCP server
+    
+  # Tool-specific configurations
+  file_reader:
+    max_file_size_mb: 10             # Maximum file size for file reader tool
+    default_analysis_level: "standard" # Default analysis level: minimal, standard, detailed, comprehensive
+    supported_encodings:              # Supported file encodings
+      - "utf-8"
+      - "latin-1"
+      - "cp1252"
+    fallback_encoding: "utf-8"      # Fallback encoding when detection fails
+    
+  file_writer:                       # Future file writer tool configuration
+    create_backups: true             # Create backups before modifying files
     backup_dir: "~/.loki-code/backups" # Directory for backup files
-    max_backups: 50                   # Maximum number of backups to keep
+    max_backups: 50                  # Maximum number of backups to keep
+    atomic_writes: true              # Use atomic writes for safety
+    
+  code_analyzer:                     # Future code analyzer tool configuration
+    cache_analysis_results: true     # Cache analysis results for performance
+    cache_ttl_seconds: 1800         # Cache TTL (30 minutes)
+    max_analysis_depth: 10          # Maximum directory traversal depth
     
   # Command execution settings (disabled by default for security)
   command_execution:
@@ -94,6 +128,21 @@ tools:
       - "del /q"
       - "shutdown"
       - "reboot"
+      - "mkfs"
+      - "dd if="
+    
+  # Performance monitoring thresholds
+  performance:
+    slow_execution_threshold_seconds: 5.0    # Threshold for slow execution warnings
+    very_slow_execution_threshold_seconds: 30.0 # Threshold for very slow execution warnings
+    memory_limit_mb: 512             # Memory limit for tool execution
+    
+  # Tool registry settings
+  registry:
+    enable_tool_discovery_cache: true # Cache discovered tools
+    tool_discovery_cache_ttl: 3600   # Cache TTL for tool discovery (1 hour)
+    validate_tools_on_startup: true  # Validate all registered tools during startup
+    auto_register_builtin_tools: true # Automatically register built-in tools
 
 # -----------------------------------------------------------------------------
 # User Interface Settings
@@ -254,3 +303,127 @@ integrations:
   package_managers:
     auto_detect: true                 # Auto-detect package.json, requirements.txt, etc.
     suggest_installs: true            # Suggest missing package installations
+
+# -----------------------------------------------------------------------------
+# Agent System Configuration
+# -----------------------------------------------------------------------------
+# Settings for the intelligent LangChain-based agent with permission-based autonomy
+agent:
+  # Core reasoning settings
+  reasoning_strategy: "intelligent_react"    # Agent reasoning strategy: intelligent_react, plan_and_execute, conversational, tool_calling
+  clarification_threshold: 0.7              # Confidence threshold for asking clarification (0.0-1.0)
+  max_planning_depth: 5                     # Maximum planning depth for complex tasks
+  max_execution_steps: 20                   # Maximum execution steps per request
+  
+  # Permission system settings
+  permission_mode: "ask_permission"         # Permission mode: auto_grant, ask_permission, strict
+  auto_grant_safe_operations: true         # Automatically grant safe operations
+  remember_session_choices: true           # Remember permission choices for session
+  remember_permanent_choices: true         # Remember permanent permission choices
+  
+  # Safety system settings
+  safety_mode: "strict"                     # Safety mode: permissive, standard, strict
+  immutable_rules_enabled: true            # Enable immutable safety rules
+  project_boundary_enforcement: true       # Enforce project boundary restrictions
+  resource_limit_enforcement: true         # Enforce resource limits
+  
+  # Interaction settings
+  explanation_level: "detailed"             # Level of explanation: minimal, standard, detailed, verbose
+  personality: "helpful"                    # Agent personality: professional, friendly, helpful, concise, analytical
+  proactive_suggestions: true              # Provide proactive suggestions
+  show_reasoning: true                      # Show agent reasoning process
+  show_progress: true                       # Show progress updates during execution
+  
+  # Performance settings
+  timeout_seconds: 300.0                   # Timeout for agent operations (seconds)
+  max_retries: 3                          # Maximum retries for failed operations
+  enable_caching: true                     # Enable response caching
+
+# -----------------------------------------------------------------------------
+# Prompt System Configuration
+# -----------------------------------------------------------------------------
+# Settings for the intelligent prompt template system that connects LLM with tools
+prompts:
+  # Default settings
+  default_template: "coding_agent"     # Default prompt template: coding_agent, code_review, debugging, file_analysis, project_analysis
+  max_context_tokens: 4000            # Default maximum context tokens for prompts
+  include_conversation_history: true  # Include conversation history in prompts
+  max_history_entries: 10             # Maximum conversation history entries to include
+  
+  # Context building settings
+  auto_build_file_context: true       # Automatically build file context when files are mentioned
+  auto_build_project_context: true    # Automatically build project context when needed
+  max_files_in_context: 5             # Maximum files to include in context
+  
+  # Tool integration settings
+  max_tools_in_description: 20        # Maximum tools to describe in prompts
+  include_tool_examples: true         # Include tool usage examples in prompts
+  tool_call_format: "markdown_code"   # Format for tool calls: markdown_code, json, yaml
+  
+  # Token management
+  enable_token_estimation: true       # Enable token count estimation
+  token_limit_behavior: "warn"        # Behavior when token limit exceeded: warn, truncate, error
+  context_compression_enabled: false  # Enable context compression for large contexts
+  
+  # Template-specific configurations
+  templates:
+    # General coding assistant template
+    coding_agent:
+      enabled: true
+      personality: "helpful"           # Agent personality: helpful, concise, detailed, formal, casual, expert
+      verbosity: "detailed"           # Verbosity level: concise, detailed, verbose
+      max_context_tokens: 3500        # Maximum context tokens for this template
+      include_examples: true          # Include usage examples in tool descriptions
+      focus_areas: []                 # Specific focus areas (empty for general assistance)
+    
+    # Code review specialist template
+    code_review:
+      enabled: true
+      personality: "expert"
+      verbosity: "detailed"
+      max_context_tokens: 4000
+      include_examples: true
+      focus_areas:                    # Focus areas for code review
+        - "security"
+        - "performance" 
+        - "maintainability"
+        - "best_practices"
+    
+    # Debugging specialist template
+    debugging:
+      enabled: true
+      personality: "expert"
+      verbosity: "detailed"
+      max_context_tokens: 4000
+      include_examples: true
+      focus_areas:                    # Focus areas for debugging
+        - "error_analysis"
+        - "root_cause"
+        - "solutions"
+        - "testing"
+    
+    # File analysis specialist template
+    file_analysis:
+      enabled: true
+      personality: "detailed"
+      verbosity: "verbose"
+      max_context_tokens: 3500
+      include_examples: true
+      focus_areas:                    # Focus areas for file analysis
+        - "structure"
+        - "quality"
+        - "patterns"
+        - "complexity"
+    
+    # Project analysis specialist template  
+    project_analysis:
+      enabled: true
+      personality: "expert"
+      verbosity: "verbose"
+      max_context_tokens: 4000
+      include_examples: true
+      focus_areas:                    # Focus areas for project analysis
+        - "architecture"
+        - "organization"
+        - "scalability"
+        - "dependencies"

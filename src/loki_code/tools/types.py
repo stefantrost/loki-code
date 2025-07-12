@@ -15,8 +15,14 @@ import time
 class SecurityLevel(Enum):
     """Security levels for tool operations."""
     SAFE = "safe"               # Read-only, no side effects
+    CAUTION = "caution"         # Limited writes, low risk
     MODERATE = "moderate"       # Writes files, limited scope
     DANGEROUS = "dangerous"     # System commands, broad changes
+    CRITICAL = "critical"       # High-risk system operations
+
+
+# Alias for compatibility with agent system
+ToolSecurityLevel = SecurityLevel
 
 
 class ToolCapability(Enum):

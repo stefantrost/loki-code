@@ -110,15 +110,142 @@ class CommandExecutionConfig(BaseModel):
     )
 
 
-class ToolsConfig(BaseModel):
-    """Tools configuration."""
+class ToolDiscoveryConfig(BaseModel):
+    """Tool discovery configuration."""
     
-    enabled: List[str] = Field(
-        default=["file_reader", "file_writer", "directory_lister"],
-        description="List of enabled tools"
+    auto_discover_builtin: bool = Field(default=True, description="Automatically discover built-in tools")
+    plugin_directories: List[str] = Field(default=[], description="Additional directories to scan for plugin tools")
+    scan_on_startup: bool = Field(default=True, description="Scan for tools during application startup")
+    rescan_interval: int = Field(default=300, ge=60, le=3600, description="Rescan interval in seconds")
+
+
+class ToolExecutionConfig(BaseModel):
+    """Tool execution configuration."""
+    
+    default_timeout_seconds: float = Field(default=30.0, ge=1.0, le=600.0, description="Default timeout for tool execution")
+    max_concurrent_tools: int = Field(default=3, ge=1, le=20, description="Maximum number of tools executing concurrently")
+    retry_failed_executions: bool = Field(default=False, description="Whether to retry failed tool executions")
+    max_retries: int = Field(default=2, ge=1, le=10, description="Maximum number of retries")
+    retry_delay_seconds: float = Field(default=1.0, ge=0.1, le=10.0, description="Delay between retries")
+    enable_execution_tracking: bool = Field(default=True, description="Track tool execution history and metrics")
+    enable_performance_monitoring: bool = Field(default=True, description="Monitor tool performance")
+    max_execution_history: int = Field(default=1000, ge=100, le=10000, description="Maximum execution records to keep")
+
+
+class ToolSecurityConfig(BaseModel):
+    """Tool security configuration."""
+    
+    allowed_paths: List[str] = Field(
+        default=["./", "~/projects/", "~/Documents/"],
+        description="Paths where tools are allowed to operate"
     )
-    file_operations: FileOperationsConfig = Field(default_factory=FileOperationsConfig)
+    restricted_paths: List[str] = Field(
+        default=["/etc", "/usr/bin", "/System", "/Windows", "/private"],
+        description="Paths that tools cannot access"
+    )
+    max_file_size_mb: int = Field(default=100, ge=1, le=1000, description="Maximum file size for tool operations")
+    require_confirmation_for: List[str] = Field(
+        default=["dangerous"],
+        description="Security levels requiring confirmation"
+    )
+    
+    @field_validator('allowed_paths', 'restricted_paths')
+    @classmethod
+    def expand_paths(cls, v):
+        """Expand user home directory in paths."""
+        return [str(Path(path).expanduser()) for path in v]
+
+
+class MCPConfig(BaseModel):
+    """MCP (Model Context Protocol) integration configuration."""
+    
+    enabled: bool = Field(default=False, description="Enable MCP tool integration")
+    auto_discover_servers: bool = Field(default=False, description="Automatically discover MCP servers")
+    trusted_servers: List[str] = Field(default=[], description="List of trusted MCP server URLs")
+    server_timeout_seconds: int = Field(default=10, ge=1, le=60, description="Timeout for MCP server communication")
+    max_tools_per_server: int = Field(default=50, ge=1, le=500, description="Maximum tools to load from each server")
+
+
+class FileReaderConfig(BaseModel):
+    """File reader tool configuration."""
+    
+    max_file_size_mb: int = Field(default=10, ge=1, le=100, description="Maximum file size for file reader tool")
+    default_analysis_level: str = Field(default="standard", description="Default analysis level")
+    supported_encodings: List[str] = Field(
+        default=["utf-8", "latin-1", "cp1252"],
+        description="Supported file encodings"
+    )
+    fallback_encoding: str = Field(default="utf-8", description="Fallback encoding when detection fails")
+    
+    @field_validator('default_analysis_level')
+    @classmethod
+    def validate_analysis_level(cls, v):
+        """Validate analysis level."""
+        allowed_levels = ['minimal', 'standard', 'detailed', 'comprehensive']
+        if v not in allowed_levels:
+            raise ValueError(f'analysis_level must be one of: {", ".join(allowed_levels)}')
+        return v
+
+
+class FileWriterConfig(BaseModel):
+    """File writer tool configuration."""
+    
+    create_backups: bool = Field(default=True, description="Create backups before modifying files")
+    backup_dir: str = Field(default="~/.loki-code/backups", description="Directory for backup files")
+    max_backups: int = Field(default=50, ge=1, le=1000, description="Maximum number of backups")
+    atomic_writes: bool = Field(default=True, description="Use atomic writes for safety")
+    
+    @field_validator('backup_dir')
+    @classmethod
+    def expand_backup_dir(cls, v):
+        """Expand user home directory in backup path."""
+        return str(Path(v).expanduser())
+
+
+class CodeAnalyzerConfig(BaseModel):
+    """Code analyzer tool configuration."""
+    
+    cache_analysis_results: bool = Field(default=True, description="Cache analysis results for performance")
+    cache_ttl_seconds: int = Field(default=1800, ge=300, le=86400, description="Cache TTL")
+    max_analysis_depth: int = Field(default=10, ge=1, le=50, description="Maximum directory traversal depth")
+
+
+class ToolPerformanceConfig(BaseModel):
+    """Tool performance monitoring configuration."""
+    
+    slow_execution_threshold_seconds: float = Field(default=5.0, ge=1.0, description="Threshold for slow execution warnings")
+    very_slow_execution_threshold_seconds: float = Field(default=30.0, ge=10.0, description="Threshold for very slow execution warnings")
+    memory_limit_mb: int = Field(default=512, ge=64, le=4096, description="Memory limit for tool execution")
+
+
+class ToolRegistryConfig(BaseModel):
+    """Tool registry configuration."""
+    
+    enable_tool_discovery_cache: bool = Field(default=True, description="Cache discovered tools")
+    tool_discovery_cache_ttl: int = Field(default=3600, ge=300, le=86400, description="Cache TTL for tool discovery")
+    validate_tools_on_startup: bool = Field(default=True, description="Validate all registered tools during startup")
+    auto_register_builtin_tools: bool = Field(default=True, description="Automatically register built-in tools")
+
+
+class ToolsConfig(BaseModel):
+    """Comprehensive tool management configuration."""
+    
+    discovery: ToolDiscoveryConfig = Field(default_factory=ToolDiscoveryConfig)
+    execution: ToolExecutionConfig = Field(default_factory=ToolExecutionConfig)
+    security: ToolSecurityConfig = Field(default_factory=ToolSecurityConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
+    
+    # Tool-specific configurations
+    file_reader: FileReaderConfig = Field(default_factory=FileReaderConfig)
+    file_writer: FileWriterConfig = Field(default_factory=FileWriterConfig)
+    code_analyzer: CodeAnalyzerConfig = Field(default_factory=CodeAnalyzerConfig)
+    
+    # Legacy configurations (for backward compatibility)
     command_execution: CommandExecutionConfig = Field(default_factory=CommandExecutionConfig)
+    
+    # Performance and registry configurations
+    performance: ToolPerformanceConfig = Field(default_factory=ToolPerformanceConfig)
+    registry: ToolRegistryConfig = Field(default_factory=ToolRegistryConfig)
 
 
 class UIConfig(BaseModel):
@@ -278,12 +405,210 @@ class IntegrationsConfig(BaseModel):
     )
 
 
+class PromptTemplateConfig(BaseModel):
+    """Configuration for individual prompt templates."""
+    
+    enabled: bool = Field(default=True, description="Whether this template is enabled")
+    personality: str = Field(default="helpful", description="Agent personality for this template")
+    verbosity: str = Field(default="detailed", description="Verbosity level: concise, detailed, verbose")
+    max_context_tokens: int = Field(default=4000, ge=1000, le=32000, description="Maximum context tokens")
+    include_examples: bool = Field(default=True, description="Include usage examples in tool descriptions")
+    focus_areas: List[str] = Field(default_factory=list, description="Specific focus areas for specialized templates")
+    
+    @field_validator('personality')
+    @classmethod
+    def validate_personality(cls, v):
+        """Validate personality is supported."""
+        allowed_personalities = ['helpful', 'concise', 'detailed', 'formal', 'casual', 'expert']
+        if v.lower() not in allowed_personalities:
+            raise ValueError(f'personality must be one of: {", ".join(allowed_personalities)}')
+        return v.lower()
+    
+    @field_validator('verbosity')
+    @classmethod
+    def validate_verbosity(cls, v):
+        """Validate verbosity level."""
+        allowed_levels = ['concise', 'detailed', 'verbose']
+        if v.lower() not in allowed_levels:
+            raise ValueError(f'verbosity must be one of: {", ".join(allowed_levels)}')
+        return v.lower()
+
+
+class AgentConfig(BaseModel):
+    """Configuration for the intelligent agent system."""
+    
+    # Core reasoning settings
+    reasoning_strategy: str = Field(default="intelligent_react", description="Agent reasoning strategy")
+    clarification_threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Confidence threshold for asking clarification")
+    max_planning_depth: int = Field(default=5, ge=1, le=20, description="Maximum planning depth for complex tasks")
+    max_execution_steps: int = Field(default=20, ge=1, le=100, description="Maximum execution steps per request")
+    
+    # Permission system settings
+    permission_mode: str = Field(default="ask_permission", description="Permission mode: auto_grant, ask_permission, strict")
+    auto_grant_safe_operations: bool = Field(default=True, description="Automatically grant safe operations")
+    remember_session_choices: bool = Field(default=True, description="Remember permission choices for session")
+    remember_permanent_choices: bool = Field(default=True, description="Remember permanent permission choices")
+    
+    # Safety system settings
+    safety_mode: str = Field(default="strict", description="Safety mode: permissive, standard, strict")
+    immutable_rules_enabled: bool = Field(default=True, description="Enable immutable safety rules")
+    project_boundary_enforcement: bool = Field(default=True, description="Enforce project boundary restrictions")
+    resource_limit_enforcement: bool = Field(default=True, description="Enforce resource limits")
+    
+    # Interaction settings
+    explanation_level: str = Field(default="detailed", description="Level of explanation: minimal, standard, detailed, verbose")
+    personality: str = Field(default="helpful", description="Agent personality: professional, friendly, helpful, concise, analytical")
+    proactive_suggestions: bool = Field(default=True, description="Provide proactive suggestions")
+    show_reasoning: bool = Field(default=True, description="Show agent reasoning process")
+    show_progress: bool = Field(default=True, description="Show progress updates during execution")
+    
+    # Performance settings
+    timeout_seconds: float = Field(default=300.0, ge=1.0, le=3600.0, description="Timeout for agent operations")
+    max_retries: int = Field(default=3, ge=0, le=10, description="Maximum retries for failed operations")
+    enable_caching: bool = Field(default=True, description="Enable response caching")
+    
+    @field_validator('reasoning_strategy')
+    @classmethod
+    def validate_reasoning_strategy(cls, v):
+        """Validate reasoning strategy."""
+        allowed_strategies = ['intelligent_react', 'plan_and_execute', 'conversational', 'tool_calling']
+        if v not in allowed_strategies:
+            raise ValueError(f'reasoning_strategy must be one of: {", ".join(allowed_strategies)}')
+        return v
+    
+    @field_validator('permission_mode')
+    @classmethod
+    def validate_permission_mode(cls, v):
+        """Validate permission mode."""
+        allowed_modes = ['auto_grant', 'ask_permission', 'strict']
+        if v not in allowed_modes:
+            raise ValueError(f'permission_mode must be one of: {", ".join(allowed_modes)}')
+        return v
+    
+    @field_validator('safety_mode')
+    @classmethod
+    def validate_safety_mode(cls, v):
+        """Validate safety mode."""
+        allowed_modes = ['permissive', 'standard', 'strict']
+        if v not in allowed_modes:
+            raise ValueError(f'safety_mode must be one of: {", ".join(allowed_modes)}')
+        return v
+    
+    @field_validator('explanation_level')
+    @classmethod
+    def validate_explanation_level(cls, v):
+        """Validate explanation level."""
+        allowed_levels = ['minimal', 'standard', 'detailed', 'verbose']
+        if v not in allowed_levels:
+            raise ValueError(f'explanation_level must be one of: {", ".join(allowed_levels)}')
+        return v
+    
+    @field_validator('personality')
+    @classmethod
+    def validate_personality(cls, v):
+        """Validate personality type."""
+        allowed_personalities = ['professional', 'friendly', 'helpful', 'concise', 'analytical']
+        if v not in allowed_personalities:
+            raise ValueError(f'personality must be one of: {", ".join(allowed_personalities)}')
+        return v
+
+
+class PromptsConfig(BaseModel):
+    """Comprehensive prompt system configuration."""
+    
+    # Default settings
+    default_template: str = Field(default="coding_agent", description="Default prompt template to use")
+    max_context_tokens: int = Field(default=4000, ge=1000, le=32000, description="Default maximum context tokens")
+    include_conversation_history: bool = Field(default=True, description="Include conversation history in prompts")
+    max_history_entries: int = Field(default=10, ge=1, le=50, description="Maximum conversation history entries")
+    
+    # Context building settings
+    auto_build_file_context: bool = Field(default=True, description="Automatically build file context when files are mentioned")
+    auto_build_project_context: bool = Field(default=True, description="Automatically build project context")
+    max_files_in_context: int = Field(default=5, ge=1, le=20, description="Maximum files to include in context")
+    
+    # Tool integration settings
+    max_tools_in_description: int = Field(default=20, ge=5, le=100, description="Maximum tools to describe in prompts")
+    include_tool_examples: bool = Field(default=True, description="Include tool usage examples")
+    tool_call_format: str = Field(default="markdown_code", description="Format for tool calls: markdown_code, json, yaml")
+    
+    # Token management
+    enable_token_estimation: bool = Field(default=True, description="Enable token count estimation")
+    token_limit_behavior: str = Field(default="warn", description="Behavior when token limit exceeded: warn, truncate, error")
+    context_compression_enabled: bool = Field(default=False, description="Enable context compression for large contexts")
+    
+    # Template-specific configurations
+    templates: Dict[str, PromptTemplateConfig] = Field(
+        default_factory=lambda: {
+            "coding_agent": PromptTemplateConfig(
+                personality="helpful",
+                verbosity="detailed",
+                max_context_tokens=3500
+            ),
+            "code_review": PromptTemplateConfig(
+                personality="expert",
+                verbosity="detailed",
+                max_context_tokens=4000,
+                focus_areas=["security", "performance", "maintainability"]
+            ),
+            "debugging": PromptTemplateConfig(
+                personality="expert",
+                verbosity="detailed",
+                max_context_tokens=4000,
+                focus_areas=["error_analysis", "root_cause", "solutions"]
+            ),
+            "file_analysis": PromptTemplateConfig(
+                personality="detailed",
+                verbosity="verbose",
+                max_context_tokens=3500,
+                focus_areas=["structure", "quality", "patterns"]
+            ),
+            "project_analysis": PromptTemplateConfig(
+                personality="expert",
+                verbosity="verbose", 
+                max_context_tokens=4000,
+                focus_areas=["architecture", "organization", "scalability"]
+            )
+        },
+        description="Template-specific configurations"
+    )
+    
+    @field_validator('default_template')
+    @classmethod
+    def validate_default_template(cls, v):
+        """Validate default template name."""
+        allowed_templates = ['coding_agent', 'code_review', 'debugging', 'file_analysis', 'project_analysis']
+        if v not in allowed_templates:
+            raise ValueError(f'default_template must be one of: {", ".join(allowed_templates)}')
+        return v
+    
+    @field_validator('tool_call_format')
+    @classmethod
+    def validate_tool_call_format(cls, v):
+        """Validate tool call format."""
+        allowed_formats = ['markdown_code', 'json', 'yaml']
+        if v not in allowed_formats:
+            raise ValueError(f'tool_call_format must be one of: {", ".join(allowed_formats)}')
+        return v
+    
+    @field_validator('token_limit_behavior')
+    @classmethod
+    def validate_token_limit_behavior(cls, v):
+        """Validate token limit behavior."""
+        allowed_behaviors = ['warn', 'truncate', 'error']
+        if v not in allowed_behaviors:
+            raise ValueError(f'token_limit_behavior must be one of: {", ".join(allowed_behaviors)}')
+        return v
+
+
 class LokiCodeConfig(BaseModel):
     """Main configuration model that combines all sections."""
     
     app: AppConfig = Field(default_factory=AppConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    prompts: PromptsConfig = Field(default_factory=PromptsConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     development: DevelopmentConfig = Field(default_factory=DevelopmentConfig)

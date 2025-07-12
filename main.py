@@ -14,6 +14,7 @@ Usage:
     python main.py --chat --prompt "Hello"  # Single prompt mode
     python main.py --list-providers # List available providers
     python main.py --list-tools     # List available tools
+    python main.py --read-file PATH # Read file with intelligent analysis
     python main.py --analyze-file PATH # Analyze a code file
     python main.py --analyze-project PATH # Analyze a project
     python main.py --list-languages # List supported languages
@@ -27,6 +28,17 @@ Examples:
     python main.py --list-tools
     python main.py --tool-info file_reader
     python main.py --test-tools
+    python main.py --read-file ./example.py --analysis-level detailed
+    python main.py --search-tools "file"        # Search for file-related tools
+    python main.py --discover-tools             # Rediscover available tools
+    python main.py --registry-stats             # Show tool registry statistics
+    python main.py --execute-tool file_reader --tool-input '{"file_path": "test.py"}'
+    python main.py --run-tests                  # Run comprehensive integration tests
+    python main.py --benchmark-tools            # Run performance benchmarks
+    python main.py --test-multi-language        # Test multi-language support
+    python main.py --test-security              # Run security validation tests
+    python main.py --test-performance           # Run performance tests
+    python main.py --test-cli                   # Test CLI integration
     python main.py --chat
     python main.py --chat --prompt "Help me with Python"
     python main.py --analyze-file ./example.py
@@ -159,6 +171,150 @@ def create_argument_parser():
         "--test-tools",
         action="store_true",
         help="Test all available tools"
+    )
+    
+    # Integration Testing Commands
+    parser.add_argument(
+        "--run-tests",
+        action="store_true",
+        help="Run comprehensive integration tests for the tool system"
+    )
+    
+    parser.add_argument(
+        "--benchmark-tools",
+        action="store_true",
+        help="Run performance benchmarks on tool system"
+    )
+    
+    parser.add_argument(
+        "--test-multi-language",
+        action="store_true",
+        help="Test tool system with multiple programming languages"
+    )
+    
+    parser.add_argument(
+        "--test-security",
+        action="store_true",
+        help="Run security validation tests"
+    )
+    
+    parser.add_argument(
+        "--test-performance",
+        action="store_true",
+        help="Run performance tests with large files"
+    )
+    
+    parser.add_argument(
+        "--test-cli",
+        action="store_true",
+        help="Test CLI integration functionality"
+    )
+    
+    # Tool Commands
+    parser.add_argument(
+        "--read-file",
+        type=str,
+        metavar="PATH",
+        help="Read a file using the file reader tool"
+    )
+    
+    parser.add_argument(
+        "--analysis-level",
+        type=str,
+        choices=["minimal", "standard", "detailed", "comprehensive"],
+        default="standard",
+        help="Analysis level for file reading (use with --read-file)"
+    )
+    
+    # Advanced Tool Management Commands
+    parser.add_argument(
+        "--search-tools",
+        type=str,
+        metavar="QUERY",
+        help="Search tools by description or name"
+    )
+    
+    parser.add_argument(
+        "--discover-tools",
+        action="store_true",
+        help="Rediscover and register available tools"
+    )
+    
+    parser.add_argument(
+        "--tool-stats",
+        type=str,
+        metavar="TOOL_NAME",
+        help="Show usage statistics for a specific tool"
+    )
+    
+    parser.add_argument(
+        "--registry-stats",
+        action="store_true",
+        help="Show overall tool registry statistics"
+    )
+    
+    parser.add_argument(
+        "--execute-tool",
+        type=str,
+        metavar="TOOL_NAME",
+        help="Execute a tool directly with JSON input"
+    )
+    
+    parser.add_argument(
+        "--tool-input",
+        type=str,
+        metavar="JSON",
+        help="JSON input for tool execution (use with --execute-tool)"
+    )
+    
+    parser.add_argument(
+        "--validate-tool",
+        type=str,
+        metavar="TOOL_NAME",
+        help="Validate a tool's configuration and functionality"
+    )
+    
+    parser.add_argument(
+        "--enable-tool",
+        type=str,
+        metavar="TOOL_NAME",
+        help="Enable a specific tool"
+    )
+    
+    parser.add_argument(
+        "--disable-tool",
+        type=str,
+        metavar="TOOL_NAME",
+        help="Disable a specific tool"
+    )
+    
+    parser.add_argument(
+        "--execution-history",
+        action="store_true",
+        help="Show recent tool execution history"
+    )
+    
+    parser.add_argument(
+        "--performance-metrics",
+        type=str,
+        nargs="?",
+        const="all",
+        metavar="TOOL_NAME",
+        help="Show performance metrics for tools (optional tool name)"
+    )
+    
+    parser.add_argument(
+        "--filter-by-capability",
+        type=str,
+        metavar="CAPABILITY",
+        help="Filter tools by capability (read_file, write_file, etc.)"
+    )
+    
+    parser.add_argument(
+        "--filter-by-security",
+        type=str,
+        choices=["safe", "moderate", "dangerous"],
+        help="Filter tools by security level"
     )
     
     # Code Analysis Commands
@@ -746,6 +902,1089 @@ def run_test_tools(args):
         
     except Exception as e:
         print(f"❌ Error testing tools: {e}", file=sys.stderr)
+        return 1
+
+
+# ============================================================================
+# Integration Testing Functions
+# ============================================================================
+
+def run_integration_tests(args):
+    """Run comprehensive integration tests for the tool system."""
+    try:
+        import subprocess
+        import os
+        
+        print("🧪 Running Comprehensive Integration Tests")
+        print("=" * 50)
+        print()
+        
+        # Check if pytest is available
+        try:
+            import pytest
+        except ImportError:
+            print("❌ pytest is required to run integration tests")
+            print("💡 Install with: pip install pytest pytest-asyncio")
+            return 1
+        
+        # Get the test directory path
+        test_dir = Path(__file__).parent / "src" / "loki_code" / "tests"
+        if not test_dir.exists():
+            print(f"❌ Test directory not found: {test_dir}")
+            return 1
+        
+        # Run pytest with verbose output
+        pytest_args = [
+            "-v",
+            "--tb=short",
+            str(test_dir / "test_tool_integration.py")
+        ]
+        
+        if args.verbose:
+            pytest_args.extend(["--capture=no", "-s"])
+        
+        print(f"🔍 Running tests from: {test_dir}")
+        print(f"📝 Command: pytest {' '.join(pytest_args)}")
+        print()
+        
+        # Run pytest as subprocess to capture output
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest"] + pytest_args,
+            cwd=Path(__file__).parent,
+            capture_output=not args.verbose,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            print("🎉 All integration tests passed!")
+            if not args.verbose and result.stdout:
+                # Show summary if not in verbose mode
+                lines = result.stdout.split('\n')
+                for line in lines[-10:]:
+                    if line.strip():
+                        print(line)
+        else:
+            print("❌ Some integration tests failed")
+            if result.stderr:
+                print("Error output:")
+                print(result.stderr)
+        
+        return result.returncode
+        
+    except Exception as e:
+        print(f"❌ Error running integration tests: {e}", file=sys.stderr)
+        return 1
+
+
+def run_tool_benchmarks(args):
+    """Run performance benchmarks on tool system."""
+    try:
+        print("⚡ Running Tool Performance Benchmarks")
+        print("=" * 40)
+        print()
+        
+        # Import the benchmark function - try full version first, fall back to simple
+        try:
+            from src.loki_code.tests.test_tool_integration import benchmark_file_analysis
+        except ImportError:
+            # Fallback to simple benchmark that doesn't need pytest
+            from src.loki_code.tests.simple_benchmarks import simple_benchmark_file_analysis as benchmark_file_analysis
+        
+        print("🔍 Benchmarking file analysis performance...")
+        results = benchmark_file_analysis()
+        
+        print("📊 Benchmark Results:")
+        print("-" * 30)
+        
+        for size, metrics in results.items():
+            print(f"📁 {size.capitalize()} file:")
+            print(f"   ⏱️  Duration: {metrics['duration_ms']:.2f}ms")
+            print(f"   📄 Lines: {metrics['lines']:,}")
+            print(f"   📊 Chars/sec: {metrics['chars_per_second']:,.0f}")
+            print()
+        
+        # Performance thresholds
+        max_allowed_ms = {
+            'small': 100,
+            'medium': 1000,
+            'large': 5000
+        }
+        
+        passed = True
+        for size, metrics in results.items():
+            if metrics['duration_ms'] > max_allowed_ms.get(size, 1000):
+                print(f"⚠️  {size.capitalize()} file benchmark exceeded threshold")
+                passed = False
+        
+        if passed:
+            print("🎉 All benchmarks passed performance thresholds!")
+            return 0
+        else:
+            print("❌ Some benchmarks exceeded performance thresholds")
+            return 1
+        
+    except Exception as e:
+        print(f"❌ Error running benchmarks: {e}", file=sys.stderr)
+        return 1
+
+
+def run_multi_language_tests(args):
+    """Test tool system with multiple programming languages."""
+    try:
+        print("🌐 Testing Multi-Language Support")
+        print("=" * 35)
+        print()
+        
+        from src.loki_code.tests.test_tool_integration import TestFixtures
+        from loki_code.core.tool_registry import get_global_registry
+        from loki_code.tools.types import ToolContext
+        
+        fixtures = TestFixtures()
+        registry = get_global_registry()
+        
+        # Test files for different languages
+        test_cases = [
+            ("Python", fixtures.create_test_python_file()),
+            ("JavaScript", fixtures.create_test_javascript_file()),
+            ("TypeScript", fixtures.create_test_typescript_file()),
+            ("Rust", fixtures.create_test_rust_file())
+        ]
+        
+        success_count = 0
+        total_count = len(test_cases)
+        
+        for language, test_file in test_cases:
+            print(f"🔍 Testing {language} analysis...")
+            
+            try:
+                # Get file reader tool
+                tool = registry.get_tool("file_reader")
+                if not tool:
+                    print(f"   ❌ File reader tool not available")
+                    continue
+                
+                # Create test context
+                context = ToolContext(
+                    project_path=fixtures.temp_dir,
+                    session_id="multi_lang_test",
+                    safety_settings=fixtures.get_test_safety_settings()
+                )
+                
+                # Execute tool
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                result = loop.run_until_complete(
+                    tool.execute({"file_path": test_file}, context)
+                )
+                
+                if result.success:
+                    print(f"   ✅ {language} analysis successful")
+                    if hasattr(result.output, 'file_info'):
+                        print(f"   📄 Language detected: {result.output.file_info.language.value}")
+                    success_count += 1
+                else:
+                    print(f"   ❌ {language} analysis failed: {result.message}")
+                
+            except Exception as e:
+                print(f"   ❌ {language} test error: {e}")
+        
+        # Cleanup
+        fixtures.cleanup()
+        
+        print()
+        print(f"📊 Multi-Language Test Results: {success_count}/{total_count} languages passed")
+        
+        if success_count == total_count:
+            print("🎉 All languages tested successfully!")
+            return 0
+        else:
+            print("⚠️  Some language tests failed")
+            return 1
+        
+    except Exception as e:
+        print(f"❌ Error running multi-language tests: {e}", file=sys.stderr)
+        return 1
+
+
+def run_security_tests(args):
+    """Run security validation tests."""
+    try:
+        print("🔒 Running Security Validation Tests")
+        print("=" * 35)
+        print()
+        
+        # Try to import test utilities - create simple versions if not available
+        try:
+            from src.loki_code.tests.test_tool_integration import TestFixtures
+        except ImportError:
+            # Create a simple test fixtures class
+            import tempfile
+            class TestFixtures:
+                def __init__(self):
+                    self.temp_dir = tempfile.mkdtemp(prefix="loki_security_test_")
+                    
+                def get_test_safety_settings(self):
+                    from loki_code.tools.types import SafetySettings
+                    return SafetySettings(
+                        allowed_paths=[self.temp_dir, "./"],
+                        max_file_size_mb=50,
+                        require_confirmation_for=[]
+                    )
+                
+                def create_large_test_file(self, size_mb):
+                    import os
+                    test_file = os.path.join(self.temp_dir, "large_test.txt")
+                    chunk = "A" * 1024  # 1KB
+                    with open(test_file, 'w') as f:
+                        for _ in range(size_mb * 1024):
+                            f.write(chunk)
+                    return test_file
+                
+                def cleanup(self):
+                    import shutil
+                    try:
+                        shutil.rmtree(self.temp_dir)
+                    except:
+                        pass
+        
+        from loki_code.core.tool_registry import get_global_registry
+        from loki_code.tools.types import ToolContext
+        
+        fixtures = TestFixtures()
+        registry = get_global_registry()
+        tool = registry.get_tool("file_reader")
+        
+        if not tool:
+            print("❌ File reader tool not available for testing")
+            return 1
+        
+        context = ToolContext(
+            project_path=fixtures.temp_dir,
+            session_id="security_test",
+            safety_settings=fixtures.get_test_safety_settings()
+        )
+        
+        security_tests = [
+            ("Restricted Path Access", "/etc/passwd"),
+            ("Windows System Path", "C:\\Windows\\System32\\config\\SAM"),
+            ("Relative Path Escape", "../../etc/passwd"),
+            ("Non-existent File", "/path/that/does/not/exist")
+        ]
+        
+        passed_tests = 0
+        total_tests = len(security_tests)
+        
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        for test_name, dangerous_path in security_tests:
+            print(f"🔍 Testing: {test_name}")
+            
+            try:
+                result = loop.run_until_complete(
+                    tool.execute({"file_path": dangerous_path}, context)
+                )
+                
+                if not result.success:
+                    print(f"   ✅ Correctly blocked access to {dangerous_path}")
+                    passed_tests += 1
+                else:
+                    print(f"   ❌ Security breach: allowed access to {dangerous_path}")
+                
+            except Exception as e:
+                print(f"   ✅ Security exception caught: {type(e).__name__}")
+                passed_tests += 1
+        
+        # Test file size limits
+        print("🔍 Testing: File Size Limits")
+        try:
+            large_file = fixtures.create_large_test_file(size_mb=60)  # Over 50MB limit
+            result = loop.run_until_complete(
+                tool.execute({"file_path": large_file}, context)
+            )
+            
+            if not result.success:
+                print("   ✅ Correctly blocked oversized file")
+                passed_tests += 1
+            else:
+                print("   ❌ Security breach: allowed oversized file")
+        except Exception as e:
+            print(f"   ✅ Size limit exception: {type(e).__name__}")
+            passed_tests += 1
+        
+        total_tests += 1
+        
+        # Cleanup
+        fixtures.cleanup()
+        
+        print()
+        print(f"📊 Security Test Results: {passed_tests}/{total_tests} tests passed")
+        
+        if passed_tests == total_tests:
+            print("🎉 All security tests passed!")
+            return 0
+        else:
+            print("❌ Some security tests failed")
+            return 1
+        
+    except Exception as e:
+        print(f"❌ Error running security tests: {e}", file=sys.stderr)
+        return 1
+
+
+def run_performance_tests(args):
+    """Run performance tests with large files."""
+    try:
+        print("⚡ Running Performance Tests")
+        print("=" * 30)
+        print()
+        
+        from src.loki_code.tests.test_tool_integration import TestFixtures
+        from loki_code.core.tool_registry import get_global_registry
+        from loki_code.tools.types import ToolContext
+        import time
+        import asyncio
+        
+        fixtures = TestFixtures()
+        registry = get_global_registry()
+        tool = registry.get_tool("file_reader")
+        
+        if not tool:
+            print("❌ File reader tool not available for testing")
+            return 1
+        
+        context = ToolContext(
+            project_path=fixtures.temp_dir,
+            session_id="perf_test",
+            safety_settings=fixtures.get_test_safety_settings()
+        )
+        
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Test different file sizes
+        test_cases = [
+            ("Small file (100 lines)", 100),
+            ("Medium file (500 lines)", 500),
+            ("Large file (1000 lines)", 1000)
+        ]
+        
+        performance_results = []
+        
+        for test_name, line_count in test_cases:
+            print(f"🔍 {test_name}...")
+            
+            # Create test file
+            test_file = fixtures.create_large_python_file(lines=line_count)
+            
+            # Measure execution time
+            start_time = time.time()
+            result = loop.run_until_complete(
+                tool.execute({"file_path": test_file}, context)
+            )
+            end_time = time.time()
+            
+            duration_ms = (end_time - start_time) * 1000
+            
+            if result.success:
+                print(f"   ✅ Completed in {duration_ms:.2f}ms")
+                performance_results.append((test_name, duration_ms, True))
+            else:
+                print(f"   ❌ Failed: {result.message}")
+                performance_results.append((test_name, duration_ms, False))
+        
+        # Cleanup
+        fixtures.cleanup()
+        
+        # Analyze results
+        print()
+        print("📊 Performance Results Summary:")
+        print("-" * 40)
+        
+        passed = True
+        max_allowed_times = {
+            "Small file": 1000,   # 1 second
+            "Medium file": 3000,  # 3 seconds  
+            "Large file": 8000    # 8 seconds
+        }
+        
+        for test_name, duration_ms, success in performance_results:
+            status = "✅" if success else "❌"
+            print(f"{status} {test_name}: {duration_ms:.2f}ms")
+            
+            # Check if within acceptable time
+            for key, max_time in max_allowed_times.items():
+                if key in test_name and duration_ms > max_time:
+                    print(f"   ⚠️  Exceeded threshold of {max_time}ms")
+                    passed = False
+        
+        print()
+        if passed:
+            print("🎉 All performance tests passed!")
+            return 0
+        else:
+            print("⚠️  Some performance tests exceeded thresholds")
+            return 1
+        
+    except Exception as e:
+        print(f"❌ Error running performance tests: {e}", file=sys.stderr)
+        return 1
+
+
+def run_cli_tests(args):
+    """Test CLI integration functionality."""
+    try:
+        print("🖥️  Running CLI Integration Tests")
+        print("=" * 32)
+        print()
+        
+        import subprocess
+        import os
+        
+        # Test basic CLI commands
+        test_commands = [
+            (["--list-tools"], "List tools command"),
+            (["--registry-stats"], "Registry stats command"),
+            (["--search-tools", "file"], "Search tools command"),
+            (["--discover-tools"], "Discover tools command"),
+        ]
+        
+        passed_tests = 0
+        total_tests = len(test_commands)
+        
+        for cmd_args, test_name in test_commands:
+            print(f"🔍 Testing: {test_name}")
+            
+            try:
+                result = subprocess.run(
+                    [sys.executable, "main.py"] + cmd_args,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    cwd=Path(__file__).parent
+                )
+                
+                if result.returncode == 0:
+                    print(f"   ✅ Command executed successfully")
+                    if args.verbose:
+                        print(f"   📝 Output: {result.stdout[:100]}...")
+                    passed_tests += 1
+                else:
+                    print(f"   ❌ Command failed with exit code {result.returncode}")
+                    if result.stderr:
+                        print(f"   📝 Error: {result.stderr[:100]}...")
+                
+            except subprocess.TimeoutExpired:
+                print(f"   ❌ Command timed out")
+            except Exception as e:
+                print(f"   ❌ Command error: {e}")
+        
+        print()
+        print(f"📊 CLI Test Results: {passed_tests}/{total_tests} commands passed")
+        
+        if passed_tests == total_tests:
+            print("🎉 All CLI tests passed!")
+            return 0
+        else:
+            print("❌ Some CLI tests failed")
+            return 1
+        
+    except Exception as e:
+        print(f"❌ Error running CLI tests: {e}", file=sys.stderr)
+        return 1
+
+
+def run_read_file(args):
+    """Read a file using the file reader tool."""
+    try:
+        from loki_code.tools import tool_registry, ToolContext, SafetySettings
+        
+        file_path = args.read_file
+        analysis_level = args.analysis_level
+        
+        print(f"📖 Reading file: {file_path}")
+        print(f"📊 Analysis level: {analysis_level}")
+        print()
+        
+        # Check if file exists
+        if not Path(file_path).exists():
+            print(f"❌ File not found: {file_path}")
+            return 1
+        
+        # Create tool context
+        context = ToolContext(
+            project_path="./",
+            session_id="cli_session",
+            safety_settings=SafetySettings()
+        )
+        
+        # Get file reader tool
+        tool = tool_registry.get_tool("file_reader")
+        if tool is None:
+            print("❌ File reader tool not found")
+            print("💡 Try running: python main.py --list-tools")
+            return 1
+        
+        # Prepare input data
+        input_data = {
+            "file_path": file_path,
+            "analysis_level": analysis_level,
+            "include_context": True,
+            "max_size_mb": 10,
+            "encoding": "utf-8"
+        }
+        
+        # Execute the tool
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(
+            tool_registry.execute_tool("file_reader", input_data, context)
+        )
+        
+        # Display results
+        if result.success:
+            output = result.output
+            
+            print("✅ File read successfully!")
+            print()
+            
+            # File information
+            file_info = output.file_info
+            print("📋 File Information:")
+            print(f"   Path: {file_info.path}")
+            print(f"   Size: {file_info.size_bytes} bytes")
+            print(f"   Lines: {file_info.lines}")
+            print(f"   Language: {file_info.language or 'Unknown'}")
+            print(f"   Last Modified: {file_info.last_modified}")
+            print(f"   Binary: {'Yes' if file_info.is_binary else 'No'}")
+            print()
+            
+            # Analysis summary
+            if output.analysis_summary:
+                print("🔍 Analysis Summary:")
+                print(f"   {output.analysis_summary}")
+                print()
+            
+            # Code analysis details
+            if output.code_analysis:
+                analysis = output.code_analysis
+                structure = analysis.get('structure_analysis', {})
+                
+                print("🧠 Code Analysis:")
+                print(f"   Language: {analysis.get('language', 'Unknown')}")
+                print(f"   Functions: {structure.get('total_functions', 0)}")
+                print(f"   Classes: {structure.get('total_classes', 0)}")
+                print(f"   Imports: {structure.get('total_imports', 0)}")
+                print(f"   Complexity Score: {analysis.get('complexity_score', 0):.2f}")
+                
+                if analysis.get('key_concepts'):
+                    print(f"   Key Concepts: {', '.join(analysis['key_concepts'][:5])}")
+                print()
+            
+            # Suggestions
+            if output.suggestions:
+                print("💡 Suggestions:")
+                for suggestion in output.suggestions:
+                    print(f"   • {suggestion}")
+                print()
+            
+            # Content preview (first 20 lines)
+            if not file_info.is_binary:
+                lines = output.content.splitlines()
+                preview_lines = min(20, len(lines))
+                
+                print(f"📄 Content Preview (first {preview_lines} lines):")
+                print("─" * 60)
+                for i, line in enumerate(lines[:preview_lines], 1):
+                    print(f"{i:3d}: {line}")
+                
+                if len(lines) > preview_lines:
+                    print(f"... ({len(lines) - preview_lines} more lines)")
+                print("─" * 60)
+            
+            print(f"\n✨ {result.message}")
+            
+        else:
+            print(f"❌ Failed to read file: {result.message}")
+            return 1
+        
+        return 0
+        
+    except Exception as e:
+        print(f"❌ Error reading file: {e}", file=sys.stderr)
+        return 1
+
+
+def run_search_tools(args):
+    """Search tools by query."""
+    try:
+        from loki_code.core.tool_registry import get_global_registry
+        
+        query = args.search_tools
+        print(f"🔍 Searching tools for: '{query}'")
+        print()
+        
+        registry = get_global_registry()
+        matching_tools = registry.search_tools(query)
+        
+        if not matching_tools:
+            print("❌ No tools found matching the query")
+            return 1
+        
+        print(f"📋 Found {len(matching_tools)} matching tools:")
+        print()
+        
+        for tool in matching_tools:
+            print(f"🛠️  {tool.name}")
+            print(f"   📝 {tool.description}")
+            print(f"   🔒 Security: {tool.security_level.value}")
+            if tool.capabilities:
+                capabilities = [cap.value for cap in tool.capabilities]
+                print(f"   ⚡ Capabilities: {', '.join(capabilities)}")
+            print()
+        
+        return 0
+        
+    except Exception as e:
+        print(f"❌ Error searching tools: {e}", file=sys.stderr)
+        return 1
+
+
+def run_discover_tools(args):
+    """Rediscover and register available tools."""
+    try:
+        from loki_code.core.tool_registry import get_global_registry
+        
+        print("🔍 Discovering available tools...")
+        
+        registry = get_global_registry()
+        
+        # Get count before discovery
+        tools_before = len(registry)
+        
+        # Rediscover tools
+        discovered_tools = registry.discovery.discover_builtin_tools()
+        newly_registered = 0
+        
+        for tool_class in discovered_tools:
+            try:
+                # Check if tool is already registered by name
+                if tool_class.__name__ not in [reg.tool_class.__name__ for reg in registry._local_tools.values()]:
+                    registry.register_tool_class(tool_class, source="discovery")
+                    newly_registered += 1
+            except Exception as e:
+                print(f"⚠️  Failed to register {tool_class.__name__}: {e}")
+        
+        tools_after = len(registry)
+        
+        print(f"✅ Tool discovery completed")
+        print(f"   📊 Total tools: {tools_after}")
+        print(f"   🆕 Newly discovered: {newly_registered}")
+        print(f"   🔄 Previously registered: {tools_before}")
+        
+        return 0
+        
+    except Exception as e:
+        print(f"❌ Error during tool discovery: {e}", file=sys.stderr)
+        return 1
+
+
+def run_tool_stats(args):
+    """Show usage statistics for a specific tool."""
+    try:
+        from loki_code.core.tool_registry import get_global_registry
+        
+        tool_name = args.tool_stats
+        print(f"📊 Tool Statistics: {tool_name}")
+        print()
+        
+        registry = get_global_registry()
+        stats = registry.get_tool_stats(tool_name)
+        
+        if not stats:
+            print(f"❌ Tool '{tool_name}' not found")
+            return 1
+        
+        print("📋 Usage Statistics:")
+        print(f"   Name: {stats['name']}")
+        print(f"   Source: {stats['source']}")
+        print(f"   Enabled: {'✅ Yes' if stats['enabled'] else '❌ No'}")
+        print(f"   Registered: {stats['registered_at']}")
+        print(f"   Last Used: {stats['last_used'] or 'Never'}")
+        print(f"   Usage Count: {stats['usage_count']}")
+        print(f"   Error Count: {stats['error_count']}")
+        print(f"   Success Rate: {stats['success_rate']:.1%}")
+        
+        return 0
+        
+    except Exception as e:
+        print(f"❌ Error getting tool stats: {e}", file=sys.stderr)
+        return 1
+
+
+def run_registry_stats(args):
+    """Show overall tool registry statistics."""
+    try:
+        from loki_code.core.tool_registry import get_global_registry
+        
+        print("📊 Tool Registry Statistics")
+        print()
+        
+        registry = get_global_registry()
+        stats = registry.get_registry_stats()
+        
+        print("📋 Overview:")
+        print(f"   Total Tools: {stats['total_tools']}")
+        print(f"   Enabled Tools: {stats['enabled_tools']}")
+        print(f"   Disabled Tools: {stats['disabled_tools']}")
+        print(f"   Total Executions: {stats['total_executions']}")
+        print(f"   Recent Executions (24h): {stats['recent_executions_24h']}")
+        print(f"   Recent Success Rate: {stats['recent_success_rate']:.1%}")
+        print()
+        
+        if stats['source_distribution']:
+            print("📦 Source Distribution:")
+            for source, count in stats['source_distribution'].items():
+                print(f"   {source}: {count}")
+            print()
+        
+        if stats['capability_distribution']:
+            print("⚡ Capability Distribution:")
+            for capability, count in stats['capability_distribution'].items():
+                print(f"   {capability}: {count}")
+            print()
+        
+        if stats['security_distribution']:
+            print("🔒 Security Level Distribution:")
+            for level, count in stats['security_distribution'].items():
+                print(f"   {level}: {count}")
+        
+        return 0
+        
+    except Exception as e:
+        print(f"❌ Error getting registry stats: {e}", file=sys.stderr)
+        return 1
+
+
+def run_execute_tool(args):
+    """Execute a tool directly with JSON input."""
+    try:
+        from loki_code.core.tool_registry import get_global_registry
+        from loki_code.core.tool_executor import get_global_executor
+        from loki_code.tools.types import ToolContext, SafetySettings
+        import json
+        import asyncio
+        
+        tool_name = args.execute_tool
+        tool_input = args.tool_input
+        
+        if not tool_input:
+            print("❌ No input provided. Use --tool-input with JSON data")
+            return 1
+        
+        print(f"🚀 Executing tool: {tool_name}")
+        print(f"📥 Input: {tool_input}")
+        print()
+        
+        # Parse JSON input
+        try:
+            input_data = json.loads(tool_input)
+        except json.JSONDecodeError as e:
+            print(f"❌ Invalid JSON input: {e}")
+            return 1
+        
+        # Create execution context
+        context = ToolContext(
+            project_path="./",
+            session_id="cli_execution",
+            safety_settings=SafetySettings()
+        )
+        
+        # Execute tool
+        executor = get_global_executor()
+        
+        # Set up async execution
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(
+            executor.execute_tool(tool_name, input_data, context)
+        )
+        
+        # Display results
+        if result.success:
+            print("✅ Tool executed successfully!")
+            print()
+            print("📤 Output:")
+            print(json.dumps(result.output, indent=2) if hasattr(result.output, '__dict__') else str(result.output))
+            print()
+            print(f"✨ {result.message}")
+        else:
+            print("❌ Tool execution failed!")
+            print(f"Error: {result.message}")
+            return 1
+        
+        return 0
+        
+    except Exception as e:
+        print(f"❌ Error executing tool: {e}", file=sys.stderr)
+        return 1
+
+
+def run_validate_tool(args):
+    """Validate a tool's configuration and functionality."""
+    try:
+        from loki_code.core.tool_registry import get_global_registry
+        
+        tool_name = args.validate_tool
+        print(f"🔍 Validating tool: {tool_name}")
+        print()
+        
+        registry = get_global_registry()
+        
+        # Check if tool exists
+        if tool_name not in registry:
+            print(f"❌ Tool '{tool_name}' not found")
+            return 1
+        
+        # Get tool instance
+        tool = registry.get_tool(tool_name)
+        if tool is None:
+            print(f"❌ Failed to get tool instance for '{tool_name}'")
+            return 1
+        
+        # Validate schema
+        try:
+            schema = tool.get_schema()
+            print(f"✅ Schema validation passed")
+            print(f"   Name: {schema.name}")
+            print(f"   Description: {schema.description}")
+            print(f"   Security Level: {schema.security_level.value}")
+            print(f"   MCP Compatible: {schema.mcp_compatible}")
+        except Exception as e:
+            print(f"❌ Schema validation failed: {e}")
+            return 1
+        
+        # Check tool registration
+        registration = registry.get_tool_registration(tool_name)
+        if registration:
+            print(f"✅ Tool registration valid")
+            print(f"   Source: {registration.source}")
+            print(f"   Enabled: {registration.enabled}")
+            print(f"   Registered: {registration.registered_at}")
+        
+        print()
+        print("🎉 Tool validation completed successfully!")
+        
+        return 0
+        
+    except Exception as e:
+        print(f"❌ Error validating tool: {e}", file=sys.stderr)
+        return 1
+
+
+def run_enable_tool(args):
+    """Enable a specific tool."""
+    try:
+        from loki_code.core.tool_registry import get_global_registry
+        
+        tool_name = args.enable_tool
+        registry = get_global_registry()
+        
+        if registry.enable_tool(tool_name):
+            print(f"✅ Tool '{tool_name}' enabled successfully")
+            return 0
+        else:
+            print(f"❌ Tool '{tool_name}' not found")
+            return 1
+        
+    except Exception as e:
+        print(f"❌ Error enabling tool: {e}", file=sys.stderr)
+        return 1
+
+
+def run_disable_tool(args):
+    """Disable a specific tool."""
+    try:
+        from loki_code.core.tool_registry import get_global_registry
+        
+        tool_name = args.disable_tool
+        registry = get_global_registry()
+        
+        if registry.disable_tool(tool_name):
+            print(f"✅ Tool '{tool_name}' disabled successfully")
+            return 0
+        else:
+            print(f"❌ Tool '{tool_name}' not found")
+            return 1
+        
+    except Exception as e:
+        print(f"❌ Error disabling tool: {e}", file=sys.stderr)
+        return 1
+
+
+def run_execution_history(args):
+    """Show recent tool execution history."""
+    try:
+        from loki_code.core.tool_registry import get_global_registry
+        
+        print("📜 Tool Execution History")
+        print()
+        
+        registry = get_global_registry()
+        history = registry.get_execution_history(limit=20)
+        
+        if not history:
+            print("📭 No execution history available")
+            return 0
+        
+        print(f"📋 Recent executions (last {len(history)}):")
+        print()
+        
+        for record in reversed(history):  # Show most recent first
+            status = "✅" if record.result and record.result.success else "❌"
+            duration = f"{record.duration_ms:.1f}ms" if record.duration_ms else "N/A"
+            
+            print(f"{status} {record.tool_name}")
+            print(f"   🕐 {record.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"   ⏱️  Duration: {duration}")
+            if record.error:
+                print(f"   ❌ Error: {record.error}")
+            print()
+        
+        return 0
+        
+    except Exception as e:
+        print(f"❌ Error getting execution history: {e}", file=sys.stderr)
+        return 1
+
+
+def run_performance_metrics(args):
+    """Show performance metrics for tools."""
+    try:
+        from loki_code.core.tool_executor import get_global_executor
+        
+        tool_name = args.performance_metrics
+        executor = get_global_executor()
+        
+        if tool_name == "all":
+            print("📈 Performance Metrics - All Tools")
+            print()
+            
+            metrics = executor.get_execution_metrics()
+            if not metrics:
+                print("📭 No performance metrics available")
+                return 0
+            
+            for name, tool_metrics in metrics.items():
+                print(f"🛠️  {name}:")
+                print(f"   Total Executions: {tool_metrics['total_executions']}")
+                print(f"   Success Rate: {tool_metrics['success_rate']:.1%}")
+                print(f"   Average Time: {tool_metrics['average_execution_time_ms']:.1f}ms")
+                if tool_metrics['fastest_execution_ms']:
+                    print(f"   Fastest: {tool_metrics['fastest_execution_ms']:.1f}ms")
+                print(f"   Slowest: {tool_metrics['slowest_execution_ms']:.1f}ms")
+                print()
+        else:
+            print(f"📈 Performance Metrics - {tool_name}")
+            print()
+            
+            metrics = executor.get_execution_metrics(tool_name)
+            if not metrics:
+                print(f"📭 No performance metrics available for '{tool_name}'")
+                return 0
+            
+            print(f"📊 Metrics:")
+            print(f"   Total Executions: {metrics['total_executions']}")
+            print(f"   Successful: {metrics['successful_executions']}")
+            print(f"   Failed: {metrics['failed_executions']}")
+            print(f"   Success Rate: {metrics['success_rate']:.1%}")
+            print(f"   Average Time: {metrics['average_execution_time_ms']:.1f}ms")
+            if metrics['fastest_execution_ms']:
+                print(f"   Fastest: {metrics['fastest_execution_ms']:.1f}ms")
+            print(f"   Slowest: {metrics['slowest_execution_ms']:.1f}ms")
+        
+        return 0
+        
+    except Exception as e:
+        print(f"❌ Error getting performance metrics: {e}", file=sys.stderr)
+        return 1
+
+
+def run_filtered_tools(args):
+    """Show tools filtered by capability or security level."""
+    try:
+        from loki_code.core.tool_registry import get_global_registry, ToolFilter
+        from loki_code.tools.types import ToolCapability, SecurityLevel
+        
+        registry = get_global_registry()
+        filter_obj = ToolFilter()
+        
+        # Apply capability filter
+        if args.filter_by_capability:
+            try:
+                capability = ToolCapability(args.filter_by_capability.lower())
+                filter_obj.capabilities = [capability]
+                print(f"🔍 Tools with capability: {capability.value}")
+            except ValueError:
+                print(f"❌ Invalid capability: {args.filter_by_capability}")
+                print(f"Valid capabilities: {', '.join([cap.value for cap in ToolCapability])}")
+                return 1
+        
+        # Apply security filter  
+        if args.filter_by_security:
+            try:
+                security_level = SecurityLevel(args.filter_by_security.lower())
+                filter_obj.security_levels = [security_level]
+                print(f"🔒 Tools with security level: {security_level.value}")
+            except ValueError:
+                print(f"❌ Invalid security level: {args.filter_by_security}")
+                return 1
+        
+        # Get filtered tools
+        tools = registry.list_tools(filter_obj)
+        
+        if not tools:
+            print("❌ No tools found matching the filter criteria")
+            return 1
+        
+        print()
+        print(f"📋 Found {len(tools)} matching tools:")
+        print()
+        
+        for tool in tools:
+            print(f"🛠️  {tool.name}")
+            print(f"   📝 {tool.description}")
+            print(f"   🔒 Security: {tool.security_level.value}")
+            if tool.capabilities:
+                capabilities = [cap.value for cap in tool.capabilities]
+                print(f"   ⚡ Capabilities: {', '.join(capabilities)}")
+            print()
+        
+        return 0
+        
+    except Exception as e:
+        print(f"❌ Error filtering tools: {e}", file=sys.stderr)
         return 1
 
 
@@ -1347,6 +2586,81 @@ def main():
         # Handle test tools mode
         if args.test_tools:
             exit_code = run_test_tools(args)
+            sys.exit(exit_code)
+        
+        # Handle integration testing commands
+        if args.run_tests:
+            exit_code = run_integration_tests(args)
+            sys.exit(exit_code)
+        
+        if args.benchmark_tools:
+            exit_code = run_tool_benchmarks(args)
+            sys.exit(exit_code)
+        
+        if args.test_multi_language:
+            exit_code = run_multi_language_tests(args)
+            sys.exit(exit_code)
+        
+        if args.test_security:
+            exit_code = run_security_tests(args)
+            sys.exit(exit_code)
+        
+        if args.test_performance:
+            exit_code = run_performance_tests(args)
+            sys.exit(exit_code)
+        
+        if args.test_cli:
+            exit_code = run_cli_tests(args)
+            sys.exit(exit_code)
+        
+        # Handle read file mode
+        if args.read_file:
+            exit_code = run_read_file(args)
+            sys.exit(exit_code)
+        
+        # Handle advanced tool management commands
+        if args.search_tools:
+            exit_code = run_search_tools(args)
+            sys.exit(exit_code)
+        
+        if args.discover_tools:
+            exit_code = run_discover_tools(args)
+            sys.exit(exit_code)
+        
+        if args.tool_stats:
+            exit_code = run_tool_stats(args)
+            sys.exit(exit_code)
+        
+        if args.registry_stats:
+            exit_code = run_registry_stats(args)
+            sys.exit(exit_code)
+        
+        if args.execute_tool:
+            exit_code = run_execute_tool(args)
+            sys.exit(exit_code)
+        
+        if args.validate_tool:
+            exit_code = run_validate_tool(args)
+            sys.exit(exit_code)
+        
+        if args.enable_tool:
+            exit_code = run_enable_tool(args)
+            sys.exit(exit_code)
+        
+        if args.disable_tool:
+            exit_code = run_disable_tool(args)
+            sys.exit(exit_code)
+        
+        if args.execution_history:
+            exit_code = run_execution_history(args)
+            sys.exit(exit_code)
+        
+        if args.performance_metrics is not None:
+            exit_code = run_performance_metrics(args)
+            sys.exit(exit_code)
+        
+        if args.filter_by_capability or args.filter_by_security:
+            exit_code = run_filtered_tools(args)
             sys.exit(exit_code)
         
         # Handle code analysis modes

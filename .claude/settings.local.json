@@ -9,7 +9,9 @@
       "Bash(pip uninstall:*)",
       "Bash(loki-code:*)",
       "Bash(black:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(chmod:*)",
+      "WebFetch(domain:python.langchain.com)"
     ],
     "deny": []
   }

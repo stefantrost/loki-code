@@ -6,7 +6,7 @@ structures and converts them into rich, contextual information that can
 be used by LLMs for code understanding, generation, and assistance.
 """
 
-from typing import Dict, List, Optional, Any, Tuple, Set
+from typing import Dict, List, Optional, Any, Tuple, Set, Union
 from dataclasses import dataclass, field
 from enum import Enum
 import json
