@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(echo:*)",
+      "Bash(ls:*)",
+      "Bash(pip uninstall:*)",
+      "Bash(loki-code:*)",
+      "Bash(black:*)",
+      "Bash(grep:*)"
+    ],
+    "deny": []
+  }
+}

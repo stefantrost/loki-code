@@ -1,0 +1,256 @@
+# =============================================================================
+# Loki Code - Default Configuration
+# =============================================================================
+# This is the default configuration file for Loki Code.
+# Values can be overridden by environment-specific config files or CLI args.
+#
+# Configuration loading priority (highest to lowest):
+# 1. Command line arguments
+# 2. Environment-specific config (e.g., development.yaml)
+# 3. This default configuration
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Application Settings
+# -----------------------------------------------------------------------------
+# Core application configuration that affects overall behavior
+app:
+  name: "Loki Code"                    # Application display name
+  version: "0.1.0"                     # Current version (auto-updated)
+  debug: false                         # Enable debug mode (boolean)
+  log_level: "INFO"                    # Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  data_dir: "~/.loki-code"            # Directory for application data
+  cache_dir: "~/.loki-code/cache"     # Directory for temporary cache files
+
+# -----------------------------------------------------------------------------
+# LLM Provider Settings
+# -----------------------------------------------------------------------------
+# Configuration for Large Language Model integration (future implementation)
+llm:
+  # Primary LLM provider configuration
+  provider: "ollama"                   # Provider: "ollama", "openai", "anthropic", "local"
+  model: "codellama:7b"               # Model name/identifier
+  base_url: "http://localhost:11434"  # Base URL for API endpoint
+  api_key: null                       # API key (if required by provider)
+  
+  # Request configuration
+  timeout: 30                         # Request timeout in seconds (integer)
+  max_tokens: 2048                    # Maximum tokens per response (integer)
+  temperature: 0.1                    # Response randomness: 0.0 (deterministic) to 1.0 (creative)
+  top_p: 0.9                         # Nucleus sampling parameter (float, 0.0-1.0)
+  
+  # Retry and fallback configuration
+  max_retries: 3                      # Maximum retry attempts for failed requests
+  retry_delay: 1.0                    # Delay between retries in seconds
+  fallback_model: null               # Fallback model if primary fails
+  
+  # Context management
+  context_window: 4096                # Maximum context window size
+  preserve_context: true              # Whether to maintain conversation context
+
+# -----------------------------------------------------------------------------
+# Tool Settings
+# -----------------------------------------------------------------------------
+# Configuration for available tools and their behavior
+tools:
+  # List of enabled tools (can be modified to disable specific tools)
+  enabled:
+    - "file_reader"                   # Read file contents
+    - "file_writer"                   # Write/modify files
+    - "directory_lister"              # List directory contents
+    - "code_analyzer"                 # Analyze code structure (future)
+    - "git_operations"                # Git integration (future)
+  
+  # File operation settings
+  file_operations:
+    max_file_size_mb: 10              # Maximum file size to process (integer)
+    allowed_extensions:               # File extensions that can be processed
+      - ".py"                         # Python files
+      - ".js"                         # JavaScript files
+      - ".ts"                         # TypeScript files
+      - ".md"                         # Markdown files
+      - ".txt"                        # Text files
+      - ".yaml"                       # YAML files
+      - ".yml"                        # YAML files (alternative extension)
+      - ".json"                       # JSON files
+      - ".toml"                       # TOML files
+      - ".ini"                        # INI configuration files
+      - ".cfg"                        # Configuration files
+    
+    # Backup settings
+    create_backups: true              # Create backups before modifying files
+    backup_dir: "~/.loki-code/backups" # Directory for backup files
+    max_backups: 50                   # Maximum number of backups to keep
+    
+  # Command execution settings (disabled by default for security)
+  command_execution:
+    enabled: false                    # Enable/disable command execution (boolean)
+    timeout_seconds: 30               # Command timeout in seconds
+    allowed_commands: []              # Whitelist of allowed commands (empty = none allowed)
+    forbidden_commands:               # Blacklist of dangerous commands
+      - "rm -rf"
+      - "sudo rm"
+      - "format"
+      - "del /q"
+      - "shutdown"
+      - "reboot"
+
+# -----------------------------------------------------------------------------
+# User Interface Settings
+# -----------------------------------------------------------------------------
+# Configuration for the user interface and interaction behavior
+ui:
+  # Visual appearance
+  theme: "default"                    # UI theme: "default", "dark", "light"
+  color_scheme: "auto"                # Color scheme: "auto", "dark", "light"
+  
+  # Display preferences
+  show_timestamps: true               # Show timestamps in output (boolean)
+  show_token_usage: true              # Display token usage statistics
+  progress_bar: true                  # Show progress bars for long operations
+  
+  # History and session management
+  max_history_items: 100              # Maximum items in command history
+  save_session: true                  # Save session between restarts
+  auto_save_interval: 300             # Auto-save interval in seconds (5 minutes)
+  
+  # Output formatting
+  max_output_lines: 1000              # Maximum lines to display in output
+  wrap_long_lines: true               # Wrap long lines in output
+  syntax_highlighting: true           # Enable syntax highlighting for code
+  
+  # Interactive features
+  confirm_destructive_operations: true # Ask for confirmation on destructive operations
+  auto_complete: true                 # Enable auto-completion features
+  keyboard_shortcuts: true            # Enable keyboard shortcuts
+
+# -----------------------------------------------------------------------------
+# Safety and Security Settings
+# -----------------------------------------------------------------------------
+# Security measures to prevent accidental or malicious operations
+safety:
+  # File system restrictions
+  restricted_paths:                   # Paths that tools cannot access
+    - "/etc"                          # System configuration directory (Unix)
+    - "/usr/bin"                      # System binaries (Unix)
+    - "/system32"                     # System directory (Windows)
+    - "/Windows"                      # Windows system directory
+    - "/System"                       # macOS system directory
+    - "/private"                      # macOS private directory
+  
+  # Command restrictions
+  dangerous_commands:                 # Commands that are never allowed
+    - "rm -rf"                        # Recursive delete (Unix)
+    - "sudo rm"                       # Elevated delete (Unix)
+    - "format"                        # Format drive (Windows)
+    - "del /q"                        # Quiet delete (Windows)
+    - "shutdown"                      # System shutdown
+    - "halt"                          # System halt
+    - "reboot"                        # System reboot
+    - "mkfs"                          # Make filesystem (Unix)
+    - "dd if="                        # Disk copy command (dangerous usage)
+  
+  # Operation limits
+  max_files_per_operation: 100        # Maximum files to process in one operation
+  max_directory_depth: 10             # Maximum directory traversal depth
+  require_confirmation_for:           # Operations requiring user confirmation
+    - "file_deletion"
+    - "directory_deletion"
+    - "system_modification"
+    - "large_file_operations"         # Files > max_file_size_mb
+
+# -----------------------------------------------------------------------------
+# Development and Debugging Settings
+# -----------------------------------------------------------------------------
+# Settings useful during development and testing
+development:
+  # Development mode flags
+  auto_reload: false                  # Auto-reload code changes (boolean)
+  mock_llm: false                     # Use mock LLM responses for testing
+  verbose_logging: false              # Enable verbose debug logging
+  
+  # Testing configuration
+  test_mode: false                    # Enable test mode behavior
+  fixture_dir: "./tests/fixtures"     # Directory containing test fixtures
+  
+  # Performance monitoring
+  profile_performance: false          # Enable performance profiling
+  log_api_calls: false               # Log all API calls for debugging
+  
+  # Development tools
+  enable_hot_reload: false            # Hot reload for UI components
+  debug_tools: false                  # Enable debug tools in UI
+  
+# -----------------------------------------------------------------------------
+# Logging Configuration
+# -----------------------------------------------------------------------------
+# Detailed logging configuration for different components
+logging:
+  # Log file settings
+  log_file: "~/.loki-code/logs/loki-code.log"  # Main log file location
+  max_log_size_mb: 10                 # Maximum log file size before rotation
+  backup_count: 5                     # Number of backup log files to keep
+  
+  # Log levels for different components
+  loggers:
+    "loki_code.core": "INFO"          # Core functionality logging
+    "loki_code.llm": "INFO"           # LLM integration logging
+    "loki_code.tools": "INFO"         # Tools logging
+    "loki_code.ui": "WARNING"         # UI logging (less verbose)
+    "loki_code.config": "INFO"        # Configuration logging
+  
+  # Log formatting
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"
+
+# -----------------------------------------------------------------------------
+# Plugin and Extension Settings
+# -----------------------------------------------------------------------------
+# Configuration for future plugin system
+plugins:
+  # Plugin management
+  enabled: []                         # List of enabled plugins
+  plugin_dir: "~/.loki-code/plugins"  # Directory for user plugins
+  auto_update: false                  # Auto-update plugins
+  
+  # Plugin security
+  allow_remote_plugins: false         # Allow loading plugins from remote sources
+  verify_signatures: true             # Verify plugin signatures
+  
+# -----------------------------------------------------------------------------
+# Cache and Performance Settings
+# -----------------------------------------------------------------------------
+# Settings related to caching and performance optimization
+cache:
+  # General cache settings
+  enabled: true                       # Enable caching system
+  ttl_seconds: 3600                   # Default cache TTL (1 hour)
+  max_cache_size_mb: 100              # Maximum cache size
+  
+  # Specific cache configurations
+  llm_responses:
+    enabled: true                     # Cache LLM responses
+    ttl_seconds: 7200                 # LLM cache TTL (2 hours)
+  
+  file_analysis:
+    enabled: true                     # Cache file analysis results
+    ttl_seconds: 1800                 # File analysis cache TTL (30 minutes)
+
+# -----------------------------------------------------------------------------
+# Integration Settings
+# -----------------------------------------------------------------------------
+# Settings for external tool integrations (future)
+integrations:
+  # Version control
+  git:
+    auto_detect: true                 # Auto-detect git repositories
+    show_status: true                 # Show git status in UI
+    
+  # IDEs and editors
+  vscode:
+    integration: false                # VS Code integration
+    
+  # Package managers
+  package_managers:
+    auto_detect: true                 # Auto-detect package.json, requirements.txt, etc.
+    suggest_installs: true            # Suggest missing package installations

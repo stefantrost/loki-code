@@ -1,0 +1,229 @@
+# =============================================================================
+# Loki Code - Development Configuration
+# =============================================================================
+# Development-specific overrides for the default configuration.
+# This file contains settings optimized for development and testing.
+#
+# Usage: python main.py --config configs/development.yaml
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Application Settings - Development Overrides
+# -----------------------------------------------------------------------------
+app:
+  debug: true                         # Enable debug mode for development
+  log_level: "DEBUG"                  # More verbose logging for development
+  data_dir: "./dev-data"              # Use local directory for dev data
+  cache_dir: "./dev-data/cache"       # Local cache directory
+
+# -----------------------------------------------------------------------------
+# LLM Provider Settings - Development Overrides
+# -----------------------------------------------------------------------------
+llm:
+  # Use faster, smaller model for development
+  model: "codellama:7b-instruct"      # Instruction-tuned model for better responses
+  timeout: 60                         # Longer timeout for development/debugging
+  max_tokens: 1024                    # Smaller token limit for faster responses
+  temperature: 0.0                    # Deterministic responses for testing
+  
+  # More aggressive retry settings for unstable dev environments
+  max_retries: 5
+  retry_delay: 0.5
+  
+  # Smaller context for faster processing during development
+  context_window: 2048
+  preserve_context: false             # Don't preserve context to avoid confusion during testing
+
+# -----------------------------------------------------------------------------
+# Tool Settings - Development Overrides
+# -----------------------------------------------------------------------------
+tools:
+  # Enable more tools for development and testing
+  enabled:
+    - "file_reader"
+    - "file_writer"
+    - "directory_lister"
+    - "code_analyzer"
+    - "git_operations"
+    - "debug_inspector"               # Development-only tool
+  
+  file_operations:
+    max_file_size_mb: 50              # Allow larger files in development
+    allowed_extensions:               # Extended file types for development
+      - ".py"
+      - ".js"
+      - ".ts"
+      - ".tsx"
+      - ".jsx"
+      - ".md"
+      - ".txt"
+      - ".yaml"
+      - ".yml"
+      - ".json"
+      - ".toml"
+      - ".ini"
+      - ".cfg"
+      - ".log"                        # Log files for debugging
+      - ".sql"                        # SQL files
+      - ".sh"                         # Shell scripts
+      - ".bat"                        # Batch files
+      - ".ps1"                        # PowerShell scripts
+    
+    create_backups: true              # Always backup in development
+    backup_dir: "./dev-data/backups"
+    max_backups: 10                   # Fewer backups in development
+  
+  command_execution:
+    enabled: true                     # Enable command execution for development
+    timeout_seconds: 60               # Longer timeout for development commands
+    allowed_commands:                 # Safe commands for development
+      - "git"
+      - "npm"
+      - "pip"
+      - "python"
+      - "node"
+      - "ls"
+      - "pwd"
+      - "echo"
+      - "cat"
+      - "grep"
+      - "find"
+
+# -----------------------------------------------------------------------------
+# UI Settings - Development Overrides
+# -----------------------------------------------------------------------------
+ui:
+  theme: "dark"                       # Dark theme for development
+  show_timestamps: true               # Always show timestamps in development
+  show_token_usage: true              # Monitor token usage during development
+  progress_bar: true                  # Show progress for debugging
+  
+  max_history_items: 50               # Smaller history for development
+  auto_save_interval: 60              # More frequent auto-save (1 minute)
+  
+  max_output_lines: 500               # Smaller output buffer for development
+  syntax_highlighting: true           # Always enable syntax highlighting
+  
+  confirm_destructive_operations: false # Skip confirmations in development
+  auto_complete: true
+  keyboard_shortcuts: true
+
+# -----------------------------------------------------------------------------
+# Safety Settings - Development Overrides
+# -----------------------------------------------------------------------------
+safety:
+  # Relaxed restrictions for development environment
+  restricted_paths:                   # Minimal restrictions for development
+    - "/etc/passwd"                   # Still protect critical system files
+    - "/etc/shadow"
+    - "/Windows/System32"
+  
+  # Allow more operations in development
+  max_files_per_operation: 500        # Higher limits for development
+  max_directory_depth: 20             # Deeper traversal for testing
+  
+  require_confirmation_for:           # Fewer confirmations in development
+    - "system_modification"
+
+# -----------------------------------------------------------------------------
+# Development Settings - Full Development Mode
+# -----------------------------------------------------------------------------
+development:
+  auto_reload: true                   # Enable auto-reload for development
+  mock_llm: false                     # Use real LLM unless testing LLM-independent features
+  verbose_logging: true               # Enable all verbose logging
+  
+  test_mode: false                    # Normal development mode (not test mode)
+  fixture_dir: "./tests/fixtures"
+  
+  profile_performance: true           # Monitor performance during development
+  log_api_calls: true                 # Log all API calls for debugging
+  
+  enable_hot_reload: true             # Enable hot reload for rapid development
+  debug_tools: true                   # Enable all debug tools
+
+# -----------------------------------------------------------------------------
+# Logging - Development Overrides
+# -----------------------------------------------------------------------------
+logging:
+  log_file: "./dev-data/logs/loki-code-dev.log"
+  max_log_size_mb: 5                  # Smaller log files in development
+  backup_count: 3                     # Fewer backup logs
+  
+  # More verbose logging for all components in development
+  loggers:
+    "loki_code.core": "DEBUG"
+    "loki_code.llm": "DEBUG"
+    "loki_code.tools": "DEBUG"
+    "loki_code.ui": "INFO"            # UI still less verbose
+    "loki_code.config": "DEBUG"
+    "loki_code.development": "DEBUG"   # Development-specific logging
+
+# -----------------------------------------------------------------------------
+# Cache Settings - Development Overrides
+# -----------------------------------------------------------------------------
+cache:
+  enabled: true                       # Keep caching enabled for performance
+  ttl_seconds: 300                    # Shorter TTL for development (5 minutes)
+  max_cache_size_mb: 50               # Smaller cache in development
+  
+  llm_responses:
+    enabled: false                    # Disable LLM response caching in development
+    ttl_seconds: 60                   # Very short TTL if enabled
+  
+  file_analysis:
+    enabled: true
+    ttl_seconds: 300                  # 5-minute cache for file analysis
+
+# -----------------------------------------------------------------------------
+# Plugin Settings - Development Overrides
+# -----------------------------------------------------------------------------
+plugins:
+  plugin_dir: "./dev-data/plugins"    # Local plugin directory
+  auto_update: false                  # Manual plugin updates in development
+  allow_remote_plugins: true          # Allow loading dev plugins
+  verify_signatures: false           # Skip signature verification in development
+
+# -----------------------------------------------------------------------------
+# Integration Settings - Development Overrides
+# -----------------------------------------------------------------------------
+integrations:
+  git:
+    auto_detect: true
+    show_status: true                 # Always show git status in development
+    
+  vscode:
+    integration: true                 # Enable VS Code integration for development
+    
+  package_managers:
+    auto_detect: true
+    suggest_installs: true            # Suggest missing packages in development
+
+# -----------------------------------------------------------------------------
+# Development-Only Settings
+# -----------------------------------------------------------------------------
+# These settings only exist in development configuration
+dev_only:
+  # Feature flags for experimental features
+  experimental_features:
+    new_ui_components: false
+    advanced_code_analysis: false
+    ai_pair_programming: false
+  
+  # Development server settings (if applicable)
+  dev_server:
+    port: 8080
+    host: "localhost"
+    auto_open_browser: false
+  
+  # Mock settings for testing integrations
+  mocks:
+    mock_git: false                   # Use real git operations
+    mock_file_system: false           # Use real file system
+    mock_llm_provider: false          # Use real LLM provider
+  
+  # Performance testing
+  performance_tests:
+    enabled: false
+    sample_size: 100
+    benchmark_operations: ["file_read", "llm_request", "code_analysis"]
