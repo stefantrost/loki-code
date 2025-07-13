@@ -11,7 +11,23 @@
       "Bash(black:*)",
       "Bash(grep:*)",
       "Bash(chmod:*)",
-      "WebFetch(domain:python.langchain.com)"
+      "WebFetch(domain:python.langchain.com)",
+      "Bash(rm:*)",
+      "Bash(find:*)",
+      "WebFetch(domain:rich.readthedocs.io)",
+      "Bash(claude mcp)",
+      "Bash(claude mcp:*)",
+      "Bash(rg:*)",
+      "Bash(chmod:*)",
+      "Bash(env)",
+      "Bash(compgen -c)",
+      "Bash(timeout:*)",
+      "WebFetch(domain:textual.textualize.io)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__get-library-docs",
+      "Bash(mv:*)",
+      "Bash(pytest:*)",
+      "Bash(pkill:*)"
     ],
     "deny": []
   }

@@ -1,19 +1,32 @@
 """
-LangChain-based intelligent agent system for Loki Code.
+Agent system for Loki Code.
 
-This package provides a comprehensive agent system that implements:
-- Permission-based autonomy with user interaction
-- Intelligent reasoning with clarification capabilities  
-- Safety-first error recovery and validation
-- Progressive user interaction patterns
-- LangChain integration with tool orchestration
+Simplified and modular agent architecture with clear separation of concerns.
 
-The agent system builds on the existing prompt template system to create
-a true coding assistant that can reason, ask for clarification, and 
-operate safely within defined boundaries.
+The agent system now consists of:
+- Core agent orchestrator (agent_core.py)  
+- Specialized components (request_analyzer, execution_planner)
+- Type definitions (types.py)
+- Permission, safety, and conversation managers
+
+This replaces the original monolithic 807-line loki_agent.py with 
+a cleaner, more maintainable structure.
 """
 
-from .loki_agent import LokiCodeAgent, AgentConfig, AgentResponse, RequestContext
+# Main agent class (simplified)
+from .agent_core import LokiCodeAgent
+
+# Type definitions
+from .types import (
+    AgentConfig, AgentResponse, RequestContext,
+    RequestUnderstanding, ExecutionPlan, AgentState
+)
+
+# Specialized components
+from .request_analyzer import RequestAnalyzer
+from .execution_planner import ExecutionPlanner
+
+# Existing managers
 from .permission_manager import (
     PermissionManager, PermissionLevel, PermissionResult,
     ToolAction, PermissionConfig
@@ -27,30 +40,44 @@ from .conversation_manager import (
     ConversationConfig
 )
 
+# Backward compatibility - original monolithic class still available
+try:
+    from .loki_agent import LokiCodeAgent as LokiCodeAgentOriginal
+except ImportError:
+    LokiCodeAgentOriginal = None
+
 __all__ = [
-    # Main agent
+    # Main agent (simplified)
     "LokiCodeAgent",
-    "AgentConfig",
+    
+    # Types
+    "AgentConfig", 
     "AgentResponse",
     "RequestContext",
+    "RequestUnderstanding",
+    "ExecutionPlan", 
+    "AgentState",
     
-    # Permission system
+    # Specialized components
+    "RequestAnalyzer",
+    "ExecutionPlanner",
+    
+    # Existing managers
     "PermissionManager",
     "PermissionLevel",
     "PermissionResult", 
     "ToolAction",
     "PermissionConfig",
-    
-    # Safety system
     "SafetyManager",
     "SafetyResult",
     "RecoveryPlan",
     "RecoveryStrategy",
     "SafetyConfig",
-    
-    # Conversation system
     "ConversationManager",
     "InteractionType",
     "UserPreferences",
     "ConversationConfig",
+    
+    # Backward compatibility
+    "LokiCodeAgentOriginal"
 ]
