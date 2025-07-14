@@ -194,14 +194,15 @@ def _register_builtin_tools():
         # Use the new comprehensive registry system
         from ..core.tool_registry import get_global_registry
         from .file_reader import FileReaderTool
+        from .file_writer import FileWriterTool
         
         registry = get_global_registry()
         registry.register_tool_class(FileReaderTool, source="builtin")
+        registry.register_tool_class(FileWriterTool, source="builtin")
     except Exception as e:
         # Import time error handling - log but don't fail the import
         import logging
         logger = logging.getLogger(__name__)
-        logger.warning(f"Failed to register built-in tool FileReaderTool: {e}")
+        logger.warning(f"Failed to register built-in tools: {e}")
 
-# Auto-register built-in tools on import (disabled due to circular import)
-# _register_builtin_tools()
+# Note: Built-in tool registration handled by core tool registry to avoid circular imports

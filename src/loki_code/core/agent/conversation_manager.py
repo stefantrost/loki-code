@@ -96,6 +96,7 @@ class ConversationConfig:
     """Configuration for conversation management."""
     max_history_entries: int = 50
     context_window_size: int = 10
+    max_context_tokens: int = 2000  # Added for memory manager compatibility
     auto_save_preferences: bool = True
     adapt_to_user_style: bool = True
     learning_enabled: bool = True

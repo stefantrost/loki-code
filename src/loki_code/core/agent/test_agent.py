@@ -1,8 +1,8 @@
 """
 Comprehensive test and validation system for the Loki Code agent.
 
-This module provides tests and validation utilities to ensure the agent
-system works correctly with all its components.
+This module provides tests and validation utilities to ensure the LangChain-based 
+agent system works correctly with all its components.
 """
 
 import asyncio
@@ -10,7 +10,8 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Any
 
-from .loki_agent import LokiCodeAgent, AgentConfig, RequestContext, AgentState
+from .langchain_agent import LokiLangChainAgent, LokiLangChainAgentFactory
+from .types import AgentConfig, RequestContext, AgentState
 from .permission_manager import PermissionManager, PermissionConfig, ToolAction, PermissionLevel
 from .safety_manager import SafetyManager, SafetyConfig, TaskContext
 from .conversation_manager import (

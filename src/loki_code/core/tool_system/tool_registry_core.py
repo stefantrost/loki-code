@@ -234,6 +234,53 @@ class ToolRegistry:
             "execution_history_size": len(self._execution_history)
         }
     
+    async def execute_tool(
+        self,
+        name: str,
+        input_data: Any,
+        context: Any,
+        timeout: Optional[float] = None
+    ) -> Any:
+        """Execute a tool by name.
+        
+        Args:
+            name: Name of the tool to execute
+            input_data: Input data for the tool
+            context: Execution context
+            timeout: Optional timeout in seconds
+            
+        Returns:
+            ToolResult from the execution
+        """
+        # Get the tool instance
+        tool = self.get_tool(name)
+        if not tool:
+            from ...tools.exceptions import ToolNotFoundError
+            raise ToolNotFoundError(
+                name,
+                available_tools=self.list_tool_names(),
+                suggested_alternatives=[]
+            )
+        
+        # Start execution record
+        record = ToolExecutionRecord.start(name, input_data, context)
+        
+        # Execute the tool directly
+        try:
+            result = await tool.safe_execute(input_data, context, timeout)
+            
+            # Record successful execution
+            record.complete(result)
+            self.record_execution(record)
+            
+            return result
+            
+        except Exception as e:
+            # Record failed execution
+            record.fail(str(e))
+            self.record_execution(record)
+            raise
+
     def record_execution(self, record: ToolExecutionRecord) -> None:
         """Record a tool execution."""
         self._execution_history.append(record)

@@ -27,7 +27,9 @@
       "mcp__context7__get-library-docs",
       "Bash(mv:*)",
       "Bash(pytest:*)",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(cp:*)",
+      "Bash(sed:*)"
     ],
     "deny": []
   }

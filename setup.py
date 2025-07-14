@@ -30,6 +30,11 @@ setup(
         "pydantic>=2.0.0",
         "pyyaml>=6.0",
         "python-dotenv>=1.0.0",
+        "langchain>=0.3.0",
+        "langchain-core>=0.3.0",
+        "langchain-community>=0.3.0",
+        "langchain-text-splitters>=0.3.0",
+        "langsmith>=0.4.0",
     ],
     extras_require={
         "dev": [

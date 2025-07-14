@@ -17,7 +17,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.code_analysis import (
     TreeSitterParser, CodeAnalyzer, ContextExtractor,
@@ -31,6 +31,7 @@ from .types import (
 )
 from .exceptions import ToolValidationError, ToolExecutionError
 from ..utils.logging import get_logger
+from ..utils.error_handling import handle_tool_execution
 
 
 @dataclass
@@ -203,65 +204,125 @@ class FileReaderTool(SimpleFileTool):
                 self.get_name()
             )
     
+    @handle_tool_execution("file_read")
     async def execute(self, input_data: Any, context: ToolContext) -> ToolResult:
         """Execute file reading with optional analysis."""
-        try:
-            # Parse input
-            file_reader_input = self._parse_input(input_data)
+        # Step 1: Validate and parse input
+        validated_input = await self._validate_and_parse_input(input_data, context)
+        
+        # Step 2: Read file safely
+        content = await self._read_file_safely(validated_input)
+        
+        # Step 3: Perform code analysis
+        analysis_result = await self._perform_code_analysis(content, validated_input)
+        
+        # Step 4: Build response
+        return self._build_response(content, analysis_result, validated_input)
+    
+    async def _validate_and_parse_input(self, input_data: Any, context: ToolContext) -> Tuple[FileReaderInput, Path]:
+        """Validate input and parse into structured data.
+        
+        Args:
+            input_data: Raw input data
+            context: Tool execution context
             
-            # Validate and resolve file path
-            file_path = self._validate_file_path(file_reader_input.file_path, context)
+        Returns:
+            Tuple of (parsed input, validated file path)
+        """
+        # Parse input data
+        file_reader_input = self._parse_input(input_data)
+        
+        # Validate and resolve file path
+        file_path = self._validate_file_path(file_reader_input.file_path, context)
+        
+        # Check file safety constraints
+        self._check_file_safety(file_path, file_reader_input, context)
+        
+        return file_reader_input, file_path
+    
+    async def _read_file_safely(self, validated_input: Tuple[FileReaderInput, Path]) -> str:
+        """Read file content safely with proper encoding handling.
+        
+        Args:
+            validated_input: Tuple of (input params, file path)
             
-            # Check file safety constraints
-            self._check_file_safety(file_path, file_reader_input, context)
+        Returns:
+            File content as string
+        """
+        file_reader_input, file_path = validated_input
+        return await self._read_file_content(file_path, file_reader_input.encoding)
+    
+    async def _perform_code_analysis(self, content: str, validated_input: Tuple[FileReaderInput, Path]) -> Dict[str, Any]:
+        """Perform code analysis if requested and applicable.
+        
+        Args:
+            content: File content
+            validated_input: Tuple of (input params, file path)
             
-            # Read file content
-            content = await self._read_file_content(file_path, file_reader_input.encoding)
-            
-            # Get basic file information
-            file_info = self._get_file_info(file_path, content, file_reader_input.encoding)
-            
-            # Perform code analysis if requested and applicable
-            code_analysis = None
-            analysis_summary = None
-            
-            if file_reader_input.include_context and not file_info.is_binary:
-                code_analysis = await self._analyze_code_file(
-                    file_path, 
-                    content, 
-                    file_reader_input.analysis_level
-                )
-                
-                if code_analysis:
-                    analysis_summary = self._generate_analysis_summary(code_analysis)
-            
-            # Generate intelligent suggestions
-            suggestions = self._generate_suggestions(file_info, code_analysis)
-            
-            # Create output
-            output = FileReaderOutput(
-                content=content,
-                file_info=file_info,
-                code_analysis=code_analysis,
-                analysis_summary=analysis_summary,
-                suggestions=suggestions
+        Returns:
+            Dictionary containing analysis results
+        """
+        file_reader_input, file_path = validated_input
+        
+        # Get basic file information
+        file_info = self._get_file_info(file_path, content, file_reader_input.encoding)
+        
+        # Perform code analysis if requested and applicable
+        code_analysis = None
+        analysis_summary = None
+        
+        if file_reader_input.include_context and not file_info.is_binary:
+            code_analysis = await self._analyze_code_file(
+                file_path, 
+                content, 
+                file_reader_input.analysis_level
             )
             
-            message = f"Successfully read {file_reader_input.file_path}"
-            if analysis_summary:
-                message += f" - {analysis_summary}"
+            if code_analysis:
+                analysis_summary = self._generate_analysis_summary(code_analysis)
+        
+        # Generate intelligent suggestions
+        suggestions = self._generate_suggestions(file_info, code_analysis)
+        
+        return {
+            'file_info': file_info,
+            'code_analysis': code_analysis,
+            'analysis_summary': analysis_summary,
+            'suggestions': suggestions
+        }
+    
+    def _build_response(self, content: str, analysis_result: Dict[str, Any], validated_input: Tuple[FileReaderInput, Path]) -> ToolResult:
+        """Build the final tool response.
+        
+        Args:
+            content: File content
+            analysis_result: Analysis results dictionary
+            validated_input: Tuple of (input params, file path)
             
-            return ToolResult.success_result(
-                output=output,
-                message=message,
-                suggested_next_actions=suggestions[:3] if suggestions else []
-            )
-            
-        except Exception as e:
-            self.logger.error(f"File reading failed: {str(e)}", exc_info=True)
-            return ToolResult.failure_result(
-                message=f"Failed to read file: {str(e)}"
-            )
+        Returns:
+            ToolResult with complete file reading response
+        """
+        file_reader_input, file_path = validated_input
+        
+        # Create output
+        output = FileReaderOutput(
+            content=content,
+            file_info=analysis_result['file_info'],
+            code_analysis=analysis_result['code_analysis'],
+            analysis_summary=analysis_result['analysis_summary'],
+            suggestions=analysis_result['suggestions']
+        )
+        
+        # Build response message
+        message = f"Successfully read {file_reader_input.file_path}"
+        if analysis_result['analysis_summary']:
+            message += f" - {analysis_result['analysis_summary']}"
+        
+        return ToolResult.success_result(
+            output=output,
+            message=message,
+            suggested_next_actions=analysis_result['suggestions'][:3] if analysis_result['suggestions'] else []
+        )
     
     def _parse_input(self, input_data: Any) -> FileReaderInput:
         """Parse input data into FileReaderInput object."""

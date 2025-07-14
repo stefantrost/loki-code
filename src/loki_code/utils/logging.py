@@ -270,10 +270,10 @@ class LoggingManager:
         self._config = config
         
         # Determine log level
-        if verbose or config.development.verbose_logging:
+        if verbose or config.app.verbose_logging:
             log_level = logging.DEBUG
         else:
-            log_level = getattr(logging, config.app.log_level.upper(), logging.INFO)
+            log_level = getattr(logging, config.app.log_level.value.upper(), logging.INFO)
         
         # Setup log directory
         self._setup_log_directory(config)
@@ -290,7 +290,7 @@ class LoggingManager:
         self._setup_console_handler(root_logger, log_level)
         
         # Setup file handler if configured
-        if hasattr(config.logging, 'log_file') and config.logging.log_file:
+        if hasattr(config.app, 'log_file') and config.app.log_file:
             self._setup_file_handler(root_logger, config, log_level)
         
         # Configure module-specific loggers
@@ -312,8 +312,8 @@ class LoggingManager:
     def _setup_log_directory(self, config):
         """Setup the log directory."""
         try:
-            if hasattr(config.logging, 'log_file'):
-                log_file_path = Path(config.logging.log_file)
+            if hasattr(config.app, 'log_file'):
+                log_file_path = Path(config.app.log_file)
                 self._log_dir = log_file_path.parent
             else:
                 self._log_dir = Path("logs")
@@ -343,8 +343,8 @@ class LoggingManager:
             log_file = self._log_dir / "loki-code.log"
             
             # Use rotating file handler
-            max_bytes = getattr(config.logging, 'max_log_size_mb', 10) * 1024 * 1024
-            backup_count = getattr(config.logging, 'backup_count', 5)
+            max_bytes = getattr(config.app, 'max_log_size_mb', 10) * 1024 * 1024
+            backup_count = getattr(config.app, 'backup_count', 5)
             
             file_handler = logging.handlers.RotatingFileHandler(
                 log_file,
@@ -365,8 +365,16 @@ class LoggingManager:
     
     def _setup_module_loggers(self, config):
         """Setup module-specific loggers based on configuration."""
-        if hasattr(config.logging, 'loggers') and config.logging.loggers:
-            for module_name, level_name in config.logging.loggers.items():
+        # Use default module logger configuration since it was moved to app config
+        default_loggers = {
+            "loki_code.core": "INFO",
+            "loki_code.llm": "INFO",
+            "loki_code.tools": "INFO",
+            "loki_code.ui": "WARNING",
+            "loki_code.config": "INFO",
+        }
+        
+        for module_name, level_name in default_loggers.items():
                 logger = logging.getLogger(module_name)
                 level = getattr(logging, level_name.upper(), logging.INFO)
                 logger.setLevel(level)
@@ -471,9 +479,9 @@ def log_config_info(config):
     logger.debug(f"Log level: {config.app.log_level}")
     logger.debug(f"LLM provider: {config.llm.provider}")
     logger.debug(f"LLM model: {config.llm.model}")
-    logger.debug(f"Tools enabled: {len(config.tools.enabled)} tools")
+    logger.debug(f"Tools auto-discover: {config.tools.auto_discover_builtin}")
     
-    if config.development.verbose_logging:
+    if config.app.verbose_logging:
         logger.debug("Verbose logging enabled")
 
 

@@ -231,40 +231,39 @@ class TaskClassifier:
     
     def _calculate_task_score(self, prompt: str, patterns: Dict, context_clues: List[str]) -> float:
         """Calculate score for a specific task type."""
-        score = 0.0
+        score_components = [
+            self._score_keywords(prompt, patterns.get('keywords', []), context_clues, weight=0.6),
+            self._score_patterns(prompt, patterns.get('patterns', []), context_clues, weight=0.8),
+            self._score_code_indicators(prompt, patterns.get('code_indicators', []), context_clues, weight=0.1)
+        ]
+        return min(sum(score_components), 1.0)
+
+    def _score_keywords(self, prompt: str, keywords: List[str], context_clues: List[str], weight: float) -> float:
+        """Score based on keyword matches."""
+        if not keywords:
+            return 0.0
         
-        # Keyword matching
-        keyword_matches = 0
-        for keyword in patterns.get('keywords', []):
-            if keyword in prompt:
-                keyword_matches += 1
-                context_clues.append(f"keyword: {keyword}")
+        matches = sum(1 for keyword in keywords if keyword in prompt)
+        context_clues.extend(f"keyword: {kw}" for kw in keywords if kw in prompt)
+        return (matches / len(keywords)) * weight
+
+    def _score_patterns(self, prompt: str, patterns: List[str], context_clues: List[str], weight: float) -> float:
+        """Score based on regex pattern matches."""
+        if not patterns:
+            return 0.0
         
-        if patterns.get('keywords'):
-            score += (keyword_matches / len(patterns['keywords'])) * 0.6
+        matches = sum(1 for pattern in patterns if re.search(pattern, prompt, re.IGNORECASE))
+        context_clues.extend(f"pattern: {pat}" for pat in patterns if re.search(pat, prompt, re.IGNORECASE))
+        return (matches / len(patterns)) * weight
+
+    def _score_code_indicators(self, prompt: str, indicators: List[str], context_clues: List[str], weight: float) -> float:
+        """Score based on code indicator matches."""
+        if not indicators:
+            return 0.0
         
-        # Pattern matching
-        pattern_matches = 0
-        for pattern in patterns.get('patterns', []):
-            if re.search(pattern, prompt, re.IGNORECASE):
-                pattern_matches += 1
-                context_clues.append(f"pattern: {pattern}")
-        
-        if patterns.get('patterns'):
-            score += (pattern_matches / len(patterns['patterns'])) * 0.8
-        
-        # Code indicators (for code-related tasks)
-        if 'code_indicators' in patterns:
-            code_matches = 0
-            for indicator in patterns['code_indicators']:
-                if indicator in prompt:
-                    code_matches += 1
-                    context_clues.append(f"code: {indicator}")
-            
-            if patterns['code_indicators']:
-                score += (code_matches / len(patterns['code_indicators'])) * 0.1
-        
-        return min(score, 1.0)
+        matches = sum(1 for indicator in indicators if indicator in prompt)
+        context_clues.extend(f"code: {ind}" for ind in indicators if ind in prompt)
+        return (matches / len(indicators)) * weight
     
     def _estimate_complexity(
         self, 

@@ -11,6 +11,31 @@ from typing import Dict, List, Any, Optional, Union
 import json
 import time
 
+# Import config for default value extraction
+try:
+    from ..config import get_config
+    _HAS_CONFIG = True
+except ImportError:
+    _HAS_CONFIG = False
+
+
+def _get_config_value(path: str, default: Any) -> Any:
+    """Helper to get configuration values with fallback."""
+    if not _HAS_CONFIG:
+        return default
+    
+    try:
+        config = get_config()
+        parts = path.split('.')
+        value = config
+        for part in parts:
+            value = getattr(value, part, None)
+            if value is None:
+                return default
+        return value
+    except Exception:
+        return default
+
 
 class SecurityLevel(Enum):
     """Security levels for tool operations."""
@@ -60,11 +85,11 @@ class ConfirmationLevel(Enum):
 class SafetySettings:
     """Safety settings for tool execution."""
     require_confirmation_for: List[SecurityLevel] = field(default_factory=lambda: [SecurityLevel.DANGEROUS])
-    allowed_paths: List[str] = field(default_factory=lambda: ["./"])
-    restricted_commands: List[str] = field(default_factory=list)
-    max_file_size_mb: int = 100
-    max_output_length: int = 10000
-    timeout_seconds: int = 30
+    allowed_paths: List[str] = field(default_factory=lambda: _get_config_value("tools.allowed_paths", ["./"]))
+    restricted_commands: List[str] = field(default_factory=lambda: _get_config_value("ui.dangerous_commands", []))
+    max_file_size_mb: int = field(default_factory=lambda: _get_config_value("performance.max_file_size_mb", 100))
+    max_output_length: int = field(default_factory=lambda: _get_config_value("performance.max_output_length", 10000))
+    timeout_seconds: int = field(default_factory=lambda: _get_config_value("performance.tool_timeout_seconds", 30))
     dry_run_mode: bool = False
 
 

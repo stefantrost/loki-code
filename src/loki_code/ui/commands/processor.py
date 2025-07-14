@@ -293,35 +293,69 @@ class CommandProcessor:
         return tool_input
     
     async def _execute_tool_direct(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a tool directly and return result."""
+        """Execute a tool directly using the real tool system."""
         
-        # This is a simplified version - in reality you'd integrate with the actual tool system
-        if tool_name == "file_reader":
-            file_path = tool_args.get('file_path')
-            if not file_path:
-                return {'success': False, 'message': 'No file path provided'}
-            
-            try:
-                # Mock file reading for now
+        try:
+            # Get the tool from the registry
+            tool = self.tools.get_tool(tool_name)
+            if not tool:
+                available_tools = self.tools.list_tool_names()
                 return {
-                    'success': True,
-                    'message': f'File {file_path} read successfully',
-                    'content': f'Content of {file_path}...'
+                    'success': False,
+                    'message': f'Tool "{tool_name}" not found. Available tools: {", ".join(available_tools)}',
+                    'available_tools': available_tools
                 }
-            except Exception as e:
-                return {'success': False, 'message': f'Error reading file: {str(e)}'}
-        
-        elif tool_name == "directory_lister":
+            
+            # Create tool context
+            from ...tools.types import ToolContext
+            tool_context = ToolContext(
+                session_id="ui_session",
+                user_id="ui_user",
+                project_path=None,  # Will be set from context if available
+                working_directory=None,
+                security_level=tool.get_schema().security_level
+            )
+            
+            # Execute the tool with proper error handling
+            self.logger.info(f"Executing tool {tool_name} with args: {tool_args}")
+            result = await self.tools.execute_tool(tool_name, tool_args, tool_context)
+            
+            # Convert ToolResult to dict format expected by UI
+            if result.success:
+                response = {
+                    'success': True,
+                    'message': result.message or f'Tool {tool_name} executed successfully',
+                    'output': result.output,
+                    'metadata': result.metadata or {},
+                    'execution_time': getattr(result, 'execution_time', None)
+                }
+                
+                # For file_reader, extract content for display
+                if tool_name == "file_reader" and result.output:
+                    if hasattr(result.output, 'content'):
+                        response['content'] = result.output.content
+                        response['file_info'] = getattr(result.output, 'file_info', None)
+                        response['analysis_summary'] = getattr(result.output, 'analysis_summary', None)
+                    elif isinstance(result.output, dict):
+                        response['content'] = result.output.get('content', '')
+                        response['file_info'] = result.output.get('file_info', {})
+                        response['analysis_summary'] = result.output.get('analysis_summary', '')
+                
+                return response
+            else:
+                return {
+                    'success': False,
+                    'message': result.message or f'Tool {tool_name} execution failed',
+                    'error': result.error_message,
+                    'metadata': result.metadata or {}
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Tool execution failed: {e}", exc_info=True)
             return {
-                'success': True,
-                'message': 'Directory listing',
-                'files': ['file1.py', 'file2.js', 'README.md']
-            }
-        
-        else:
-            return {
-                'success': True,
-                'message': f'Tool {tool_name} executed with args: {tool_args}'
+                'success': False,
+                'message': f'Error executing tool {tool_name}: {str(e)}',
+                'error': str(e)
             }
     
     def _generate_help_text(self) -> str:

@@ -1,20 +1,19 @@
 """
 Agent system for Loki Code.
 
-Simplified and modular agent architecture with clear separation of concerns.
+LangChain-based agent architecture with ReAct pattern.
 
 The agent system now consists of:
-- Core agent orchestrator (agent_core.py)  
-- Specialized components (request_analyzer, execution_planner)
+- LangChain ReAct agent (langchain_agent.py)
 - Type definitions (types.py)
 - Permission, safety, and conversation managers
+- LangChain tool adapters
 
-This replaces the original monolithic 807-line loki_agent.py with 
-a cleaner, more maintainable structure.
+This implements proper LangChain integration as specified in Phase 4.
 """
 
-# Main agent class (simplified)
-from .agent_core import LokiCodeAgent
+# Main agent class (LangChain-based)
+from .langchain_agent import LokiLangChainAgent as LokiCodeAgent, LokiLangChainAgentFactory
 
 # Type definitions
 from .types import (
@@ -22,9 +21,8 @@ from .types import (
     RequestUnderstanding, ExecutionPlan, AgentState
 )
 
-# Specialized components
-from .request_analyzer import RequestAnalyzer
-from .execution_planner import ExecutionPlanner
+# Backward compatibility
+from .loki_agent import LokiAgent
 
 # Existing managers
 from .permission_manager import (
@@ -40,15 +38,10 @@ from .conversation_manager import (
     ConversationConfig
 )
 
-# Backward compatibility - original monolithic class still available
-try:
-    from .loki_agent import LokiCodeAgent as LokiCodeAgentOriginal
-except ImportError:
-    LokiCodeAgentOriginal = None
-
 __all__ = [
-    # Main agent (simplified)
+    # Main agent (LangChain-based)
     "LokiCodeAgent",
+    "LokiLangChainAgentFactory",
     
     # Types
     "AgentConfig", 
@@ -58,9 +51,8 @@ __all__ = [
     "ExecutionPlan", 
     "AgentState",
     
-    # Specialized components
-    "RequestAnalyzer",
-    "ExecutionPlanner",
+    # Backward compatibility
+    "LokiAgent",
     
     # Existing managers
     "PermissionManager",
@@ -76,8 +68,5 @@ __all__ = [
     "ConversationManager",
     "InteractionType",
     "UserPreferences",
-    "ConversationConfig",
-    
-    # Backward compatibility
-    "LokiCodeAgentOriginal"
+    "ConversationConfig"
 ]

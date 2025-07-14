@@ -110,7 +110,7 @@ class ModelManager:
         
         # Resource management
         self._resource_lock = threading.RLock()
-        self._cleanup_interval = 300  # 5 minutes
+        self._cleanup_interval = config.performance.cleanup_interval_seconds
         self._last_cleanup = time.time()
         
         # Load model configurations
@@ -164,52 +164,32 @@ class ModelManager:
         start_time = time.perf_counter()
         
         try:
-            # Classify the task
-            classification = self.task_classifier.classify_prompt(prompt, task_context)
-            self.logger.debug(f"Task classified: {classification.task_type.value} "
-                            f"(confidence: {classification.confidence:.2f}, "
-                            f"complexity: {classification.complexity:.2f})")
-            
-            # Select the optimal model
-            if override_model:
-                selected_model = override_model
-                self.logger.info(f"Using override model: {selected_model}")
-            else:
-                selected_model = await self._select_optimal_model(classification)
-            
-            # Get or create provider
-            provider = await self._get_provider(selected_model)
-            
-            # Create generation request
-            model_config = self._model_configs.get(selected_model)
-            request = GenerationRequest(
-                prompt=prompt,
-                model=selected_model,
-                temperature=model_config.temperature if model_config else None,
-                max_tokens=model_config.max_tokens if model_config else None
+            # Step 1: Classify task and select model
+            classification, selected_model = await self._classify_and_select_model(
+                prompt, task_context, override_model
             )
             
-            # Generate response
+            # Step 2: Create generation request
+            provider, request = await self._create_generation_request(
+                prompt, selected_model
+            )
+            
+            # Step 3: Generate response
             response = await provider.generate(request)
             
-            # Record performance
+            # Step 4: Track performance metrics
             generation_time = (time.perf_counter() - start_time) * 1000
-            await self._record_performance(
-                selected_model, 
-                classification.task_type, 
-                generation_time, 
-                len(response.content.split())
+            await self._track_performance_metrics(
+                selected_model, classification.task_type, generation_time, response
             )
-            
-            self.logger.info(f"Generated response using {selected_model} "
-                           f"in {generation_time:.1f}ms")
             
             return response
             
         except Exception as e:
             self.logger.error(f"Generation failed: {e}")
-            # Try fallback
+            # Try fallback if not using override model
             if not override_model:
+                classification = self.task_classifier.classify_prompt(prompt, task_context)
                 return await self._try_fallback(prompt, classification, e)
             raise
     
@@ -275,6 +255,94 @@ class ModelManager:
                 # For streaming, we can't easily fall back, so just log and re-raise
                 pass
             raise
+    
+    async def _classify_and_select_model(
+        self, 
+        prompt: str, 
+        task_context: Optional[TaskContext], 
+        override_model: Optional[str]
+    ) -> Tuple[TaskClassification, str]:
+        """Handle task classification and model selection logic.
+        
+        Args:
+            prompt: The input prompt
+            task_context: Additional context for task classification
+            override_model: Specific model to use (overrides selection)
+            
+        Returns:
+            Tuple of (classification result, selected model name)
+        """
+        # Classify the task
+        classification = self.task_classifier.classify_prompt(prompt, task_context)
+        self.logger.debug(f"Task classified: {classification.task_type.value} "
+                        f"(confidence: {classification.confidence:.2f}, "
+                        f"complexity: {classification.complexity:.2f})")
+        
+        # Select the optimal model
+        if override_model:
+            selected_model = override_model
+            self.logger.info(f"Using override model: {selected_model}")
+        else:
+            selected_model = await self._select_optimal_model(classification)
+        
+        return classification, selected_model
+    
+    async def _create_generation_request(
+        self, 
+        prompt: str, 
+        selected_model: str
+    ) -> Tuple[BaseLLMProvider, GenerationRequest]:
+        """Create standardized generation request.
+        
+        Args:
+            prompt: The input prompt
+            selected_model: Selected model name
+            
+        Returns:
+            Tuple of (provider instance, generation request)
+        """
+        # Get or create provider
+        provider = await self._get_provider(selected_model)
+        
+        # Create generation request with model-specific configuration
+        model_config = self._model_configs.get(selected_model)
+        request = GenerationRequest(
+            prompt=prompt,
+            model=selected_model,
+            temperature=model_config.temperature if model_config else None,
+            max_tokens=model_config.max_tokens if model_config else None
+        )
+        
+        return provider, request
+    
+    async def _track_performance_metrics(
+        self, 
+        model_name: str, 
+        task_type: TaskType, 
+        generation_time_ms: float, 
+        response: GenerationResponse
+    ) -> None:
+        """Centralized performance tracking.
+        
+        Args:
+            model_name: Name of the model used
+            task_type: Type of task performed
+            generation_time_ms: Generation time in milliseconds
+            response: The generation response
+        """
+        # Calculate token count
+        token_count = len(response.content.split())
+        
+        # Record performance metrics
+        await self._record_performance(
+            model_name, 
+            task_type, 
+            generation_time_ms, 
+            token_count
+        )
+        
+        self.logger.info(f"Generated response using {model_name} "
+                       f"in {generation_time_ms:.1f}ms ({token_count} tokens)")
     
     async def _select_optimal_model(self, classification: TaskClassification) -> str:
         """Select the optimal model for a given task classification.

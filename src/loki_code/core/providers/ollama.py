@@ -10,6 +10,8 @@ import time
 from typing import List, Optional, AsyncIterator, Dict, Any
 import json
 
+from ...utils.error_handling import handle_provider_operation, AsyncProviderMixin
+
 from .base import (
     BaseLLMProvider, 
     ProviderCapabilities, 
@@ -26,7 +28,7 @@ from ..llm_client import OllamaClient, LLMRequest, LLMClientError, LLMConnection
 from ...config.models import LokiCodeConfig
 
 
-class OllamaProvider(BaseLLMProvider):
+class OllamaProvider(BaseLLMProvider, AsyncProviderMixin):
     """
     Ollama provider implementation.
     
@@ -77,6 +79,7 @@ class OllamaProvider(BaseLLMProvider):
         except LLMClientError as e:
             raise ProviderConnectionError(str(e), "ollama") from e
     
+    @handle_provider_operation("stream_generate", timeout=60.0)
     async def stream_generate(self, request: GenerationRequest) -> AsyncIterator[str]:
         """Generate text with streaming response using Ollama.
         
@@ -86,33 +89,20 @@ class OllamaProvider(BaseLLMProvider):
         Yields:
             Individual tokens or text chunks as they're generated
         """
-        try:
-            # Convert provider request to client request
-            llm_request = self._convert_to_llm_request(request)
-            llm_request.stream = True
-            
-            # Use existing client for streaming generation
-            # Note: The existing client is synchronous, so we run it in a thread
-            loop = asyncio.get_event_loop()
-            
-            def _run_streaming():
-                return self.client.send_prompt(llm_request, stream=True)
-            
-            # Run the synchronous streaming in a thread
-            stream_generator = await loop.run_in_executor(None, _run_streaming)
-            
-            # Yield tokens from the generator
-            for token in stream_generator:
-                yield token
-                
-        except LLMConnectionError as e:
-            raise ProviderConnectionError(str(e), "ollama") from e
-        except LLMModelError as e:
-            raise ProviderModelError(str(e), "ollama") from e
-        except LLMTimeoutError as e:
-            raise ProviderTimeoutError(str(e), "ollama") from e
-        except LLMClientError as e:
-            raise ProviderConnectionError(str(e), "ollama") from e
+        # Convert provider request to client request
+        llm_request = self._convert_to_llm_request(request)
+        llm_request.stream = True
+        
+        # Use the async provider mixin to run sync code in executor
+        def _run_streaming():
+            return self.client.send_prompt(llm_request, stream=True)
+        
+        # Run the synchronous streaming in a thread with timeout
+        stream_generator = await self.run_sync_in_executor(_run_streaming, timeout=60.0)
+        
+        # Yield tokens from the generator
+        for token in stream_generator:
+            yield token
     
     async def health_check(self) -> bool:
         """Check if Ollama is healthy and responding.

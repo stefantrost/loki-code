@@ -2,10 +2,10 @@
 Backward compatibility wrapper for LokiAgent.
 
 This module provides the LokiAgent class for backward compatibility,
-mapping to the new simplified LokiCodeAgent.
+mapping to the new LangChain-based LokiCodeAgent.
 """
 
-from .agent_core import LokiCodeAgent
+from .langchain_agent import LokiLangChainAgent as LokiCodeAgent
 from .types import AgentConfig, AgentResponse, RequestContext, AgentState
 
 # Backward compatibility alias
