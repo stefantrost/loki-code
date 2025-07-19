@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch, AsyncMock, MagicMock
 from pathlib import Path
 from typing import List, Dict, Any
 
-from ..core.agent.loki_agent import (
+from ..core.agent import (
     LokiCodeAgent, AgentConfig, RequestContext, AgentResponse, AgentState,
     RequestUnderstanding, ExecutionPlan
 )

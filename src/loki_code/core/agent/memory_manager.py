@@ -100,10 +100,17 @@ class LangChainMemoryManager:
             if not self.llm:
                 self.logger.warning("No LLM provided for summary strategy, falling back to buffer")
                 return ConversationBufferMemory(**memory_kwargs)
-            return ConversationSummaryMemory(
-                llm=self.llm,
-                **memory_kwargs
-            )
+            
+            # Try to create summary memory, fall back to buffer if tokenizer issues
+            try:
+                return ConversationSummaryMemory(
+                    llm=self.llm,
+                    **memory_kwargs
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to create summary memory (likely tokenizer issue): {e}")
+                self.logger.info("Falling back to buffer memory strategy")
+                return ConversationBufferMemory(**memory_kwargs)
             
         elif self.strategy == MemoryStrategy.SUMMARY_BUFFER:
             if not self.llm:
@@ -112,11 +119,21 @@ class LangChainMemoryManager:
                     k=getattr(self.config, 'context_window_size', 10),
                     **memory_kwargs
                 )
-            return ConversationSummaryBufferMemory(
-                llm=self.llm,
-                max_token_limit=getattr(self.config, 'max_context_tokens', 2000),
-                **memory_kwargs
-            )
+            
+            # Try to create summary buffer memory, fall back to window if tokenizer issues
+            try:
+                return ConversationSummaryBufferMemory(
+                    llm=self.llm,
+                    max_token_limit=getattr(self.config, 'max_context_tokens', 2000),
+                    **memory_kwargs
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to create summary buffer memory (likely tokenizer issue): {e}")
+                self.logger.info("Falling back to window memory strategy")
+                return ConversationBufferWindowMemory(
+                    k=getattr(self.config, 'context_window_size', 10),
+                    **memory_kwargs
+                )
         
         else:
             self.logger.error(f"Unknown memory strategy: {self.strategy}")

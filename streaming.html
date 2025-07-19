@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Streaming Test</title>
+</head>
+
+<body>
+  <div id="response"></div>
+  <button onclick="startStream()">Test Stream</button>
+
+  <script>
+    async function startStream() {
+      const responseDiv = document.getElementById('response');
+      responseDiv.innerHTML = '';
+
+      const response = await fetch('http://localhost:11434/api/chat', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          model: 'qwen3:32b',
+          messages: [{role: 'user', content: 'Tell me a long story'}],
+          stream: true
+        })
+      });
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.trim()) {
+            try {
+              const data = JSON.parse(line);
+              const content = data.message?.content || '';
+              responseDiv.innerHTML += content;
+            } catch (e) {
+              console.log('Parse error:', line);
+            }
+          }
+        }
+      }
+    }
+  </script>
+</body>
+
+</html>

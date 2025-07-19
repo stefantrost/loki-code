@@ -21,7 +21,7 @@ app:
 # -----------------------------------------------------------------------------
 llm:
   # Use faster, smaller model for development
-  model: "codellama:7b-instruct"      # Instruction-tuned model for better responses
+  model: "codellama:7b"               # Faster model for development
   timeout: 60                         # Longer timeout for development/debugging
   max_tokens: 1024                    # Smaller token limit for faster responses
   temperature: 0.0                    # Deterministic responses for testing

@@ -53,8 +53,8 @@ class LokiToolAdapter(LangChainBaseTool):
         loki_tool: BaseTool,
         permission_manager: Optional[Any] = None,
         safety_manager: Optional[Any] = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> None:
         """Initialize the adapter with a Loki tool and optional managers."""
         # Get tool schema information
         schema = loki_tool.get_schema()
@@ -75,13 +75,36 @@ class LokiToolAdapter(LangChainBaseTool):
         """Initialize logger for the adapter."""
         self.logger = get_logger(f"{__name__}.{self.__class__.__name__}")
 
+    def _parse_tool_input(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse tool input to handle LangChain JSON string issues."""
+        import json
+        
+        # If we have exactly one parameter and it looks like a JSON string,
+        # try to parse it as JSON
+        if len(kwargs) == 1:
+            key, value = next(iter(kwargs.items()))
+            if isinstance(value, str) and value.strip().startswith("{") and value.strip().endswith("}"):
+                try:
+                    # Try to parse as JSON
+                    parsed_data = json.loads(value)
+                    if isinstance(parsed_data, dict):
+                        self.logger.debug(f"Parsed JSON input: {parsed_data}")
+                        return parsed_data
+                except json.JSONDecodeError:
+                    # If parsing fails, fall back to original kwargs
+                    self.logger.debug(f"Failed to parse as JSON, using original: {kwargs}")
+                    pass
+        
+        # Return original kwargs if no JSON parsing needed
+        return kwargs
+
     @classmethod
     def create_adapter(
         cls,
         loki_tool: BaseTool,
         permission_manager: Optional[Any] = None,
         safety_manager: Optional[Any] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> "LokiToolAdapter":
         """Factory method to create adapter instances.
 
@@ -101,13 +124,21 @@ class LokiToolAdapter(LangChainBaseTool):
             **kwargs,
         )
 
-    def _run(self, run_manager: Optional[CallbackManagerForToolRun] = None, **kwargs) -> str:
+    def _run(self, **kwargs: Any) -> str:
         """Execute the Loki tool with permission and safety checks."""
-        return self._execute_with_checks(kwargs, run_manager)
+        # Extract run_manager from kwargs to avoid conflicts
+        run_manager = kwargs.pop('run_manager', None)
+        # Handle JSON string input parsing issue
+        parsed_kwargs = self._parse_tool_input(kwargs)
+        return self._execute_with_checks(parsed_kwargs, run_manager)
 
-    async def _arun(self, run_manager: Optional[CallbackManagerForToolRun] = None, **kwargs) -> str:
+    async def _arun(self, **kwargs: Any) -> str:
         """Async execution of the Loki tool with permission and safety checks."""
-        return self._execute_with_checks(kwargs, run_manager, is_async=True)
+        # Extract run_manager from kwargs to avoid conflicts
+        run_manager = kwargs.pop('run_manager', None)
+        # Handle JSON string input parsing issue
+        parsed_kwargs = self._parse_tool_input(kwargs)
+        return self._execute_with_checks(parsed_kwargs, run_manager, is_async=True)
 
     def _execute_with_checks(
         self,
@@ -136,24 +167,43 @@ class LokiToolAdapter(LangChainBaseTool):
                 self.logger.debug("Safety manager available but not implemented")
 
             # Execute the tool
+            import asyncio
+            import concurrent.futures
+
             if is_async:
-                import asyncio
-
-                result = asyncio.run(self.loki_tool.execute(kwargs, context))
+                # For async execution, run in event loop
+                try:
+                    loop = asyncio.get_running_loop()
+                    # Create a new thread to run the async function
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(
+                            asyncio.run, self.loki_tool.execute(kwargs, context)
+                        )
+                        result = future.result()
+                except RuntimeError:
+                    # No running event loop
+                    result = asyncio.run(self.loki_tool.execute(kwargs, context))
             else:
-                # For sync execution, we'll run the async method
-                import asyncio
-
-                result = asyncio.run(self.loki_tool.execute(kwargs, context))
+                # For sync execution, handle properly
+                try:
+                    # Check if we're in an event loop
+                    loop = asyncio.get_running_loop()
+                    # Run in thread pool to avoid blocking
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(
+                            asyncio.run, self.loki_tool.execute(kwargs, context)
+                        )
+                        result = future.result()
+                except RuntimeError:
+                    # No running event loop, safe to use asyncio.run()
+                    result = asyncio.run(self.loki_tool.execute(kwargs, context))
 
             # Format result for LangChain
-            if isinstance(result, ToolResult):
-                if result.success:
-                    return str(result.output)
-                else:
-                    return f"Tool execution failed: {result.message}"
+            # self.loki_tool.execute() always returns a ToolResult
+            if result.success:
+                return str(result.output)
             else:
-                return str(result)
+                return f"Tool execution failed: {result.message}"
 
         except Exception as e:
             self.logger.error(f"Error executing {self.name}: {e}", exc_info=True)
@@ -182,8 +232,8 @@ class FileReaderToolAdapter(LokiToolAdapter):
         self,
         permission_manager: Optional[Any] = None,
         safety_manager: Optional[Any] = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> None:
         """Initialize FileReader adapter."""
         loki_tool = FileReaderTool()
         super().__init__(
@@ -199,12 +249,14 @@ class FileWriterToolAdapter(LokiToolAdapter):
 
     name: str = "file_writer"
     description: str = (
-        "Write content to files with safety checks, backup creation, and optional code formatting"
+        "Write content to files with safety checks, backup creation, and optional code formatting. "
+        "REQUIRED: Both file_path (filename) and content (actual text to write) must be provided. "
+        "For code generation requests, first create the code content, then write it to an appropriate file."
     )
 
     class ArgsSchema(BaseModel):
-        file_path: str = Field(description="Path to the file to write")
-        content: str = Field(description="Content to write to the file")
+        file_path: str = Field(description="Path to the file to write (REQUIRED - e.g., 'hello.go', 'main.py')")
+        content: str = Field(description="Content to write to the file (REQUIRED - the actual code or text)")
         mode: str = Field(
             default="write", description="Write mode: write (overwrite), append, or insert at line"
         )
@@ -224,8 +276,8 @@ class FileWriterToolAdapter(LokiToolAdapter):
         self,
         permission_manager: Optional[Any] = None,
         safety_manager: Optional[Any] = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> None:
         """Initialize FileWriter adapter."""
         loki_tool = FileWriterTool()
         super().__init__(

@@ -53,18 +53,22 @@ python main.py --help
 # Package entry point
 loki-code --help
 
-# Key development commands
-python main.py --test-llm                           # Test LLM connection
-python main.py --rich-ui --interactive             # Full TUI mode
-python main.py --chat                              # Simple chat mode
+# Key development commands (HTTP mode is now default)
+python main.py --test-llm                           # Test LLM connection (HTTP mode)
+python main.py --tui                               # Full TUI mode (HTTP mode)
+python main.py --chat                              # Simple chat mode (HTTP mode)
 python main.py --list-tools                        # Available tools
-python main.py --test-agent                        # Agent system test
+
+# Direct Mode (communicates directly with local LLM providers)
+python main.py --config configs/direct-mode.yaml --tui  # TUI with direct LLM (Ollama)
+python main.py --config configs/direct-mode.yaml --chat # Chat with direct LLM (Ollama)
 ```
 
 ## Architecture Overview
 
 ### Core Design Principles
-- **Local-first execution**: Designed for enterprise environments with local LLMs (Ollama)
+- **Service-oriented architecture**: HTTP-based LLM server for scalability and performance (default)
+- **Local-first execution**: Designed for enterprise environments with local LLMs
 - **MCP-compatible**: Tool system built for Model Context Protocol integration
 - **Modular architecture**: Clear separation between core logic, UI, and tools
 - **Security-first**: Permission-based autonomy and safe execution boundaries
@@ -170,16 +174,67 @@ Real-time interaction flow:
 2. **Layout management** (`src/loki_code/ui/console/layouts.py`)
 3. **Theme system** (`src/loki_code/ui/console/themes.py`)
 
+### HTTP Mode Architecture (New)
+
+**Loki Code** now supports two operational modes:
+
+#### 1. **Direct Mode** (Traditional)
+```
+┌─────────────────┬──────────────────┬─────────────────┐
+│   UI Layer      │   Core Layer     │   Tool Layer    │
+├─────────────────┼──────────────────┼─────────────────┤
+│ • TUI Interface │ • Agent Service  │ • Tool Registry │
+│ • Chat Mode     │ • LLM Providers  │ • File Tools    │
+│ • Commands      │ • Model Loading  │ • Code Analysis │
+│                 │ • Direct LLM     │ • MCP Support   │
+└─────────────────┴──────────────────┴─────────────────┘
+```
+
+#### 2. **HTTP Mode** (New Service-Oriented)
+```
+┌─────────────────┬──────────────────┬─────────────────┐
+│ Loki Code App   │   HTTP Client    │ LLM Server      │
+├─────────────────┼──────────────────┼─────────────────┤
+│ • TUI Interface │ • HTTP Agent     │ • FastAPI       │
+│ • Chat Mode     │ • Request/Reply  │ • Model Manager │
+│ • Commands      │ • Error Handling │ • Transformers  │
+│ • Tool System   │ • Streaming      │ • Ollama/OpenAI │
+└─────────────────┴──────────────────┴─────────────────┘
+```
+
+**HTTP Mode Benefits**:
+- ✅ **Fast startup**: No model loading in main process
+- ✅ **No blocking**: Non-blocking TUI and chat interfaces
+- ✅ **Scalability**: Server can handle multiple clients
+- ✅ **Resource isolation**: LLM memory usage isolated to server
+- ✅ **Independent deployment**: Server and client can be on different machines
+- ✅ **Better debugging**: Separate logs and processes
+
+**Configuration**:
+```yaml
+# configs/http-mode.yaml
+llm:
+  use_llm_server: true
+  llm_server_url: "http://localhost:8765"
+  llm_server_timeout: 30.0
+  llm_server_retries: 3
+```
+
 ### Current Development Phase
 **Phase 5 Complete**: Interactive TUI with real-time input, flicker-free display, and full agent integration
+**Phase 6 Complete**: HTTP-based LLM server architecture with independent deployment (now default)
+**Phase 7 Complete**: TUI decoupling with streaming support and clean architecture
 
 **Next Phases**:
-- **Phase 6**: Additional tools (file writer, directory lister, MCP integration)
-- **Phase 7**: Enhanced TUI (panels, file browser, dependency analysis)
-- **Phase 8**: Advanced planning system with multi-step task decomposition
+- **Phase 8**: Enhanced TUI (panels, file browser, dependency analysis)
+- **Phase 9**: Advanced planning system with multi-step task decomposition
+- **Phase 10**: Additional UI implementations (web, mobile, API-only)
+- **Phase 11**: Distributed deployment and scaling features
 
 ### Important Notes
-- **Local LLM focus**: Primarily designed for Ollama but provider-agnostic
+- **HTTP-first architecture**: Default mode uses independent LLM server for better scalability
+- **Decoupled UI architecture**: TUI properly separated from core with streaming support
+- **Fallback to direct mode**: Use `--config configs/direct-mode.yaml` for direct LLM integration
 - **Enterprise ready**: Security boundaries and permission systems built-in
-- **MCP evolution**: Current tools are MCP-compatible, native MCP in Phase 6
-- **Real-time performance**: TUI optimized for 30fps with intelligent refresh throttling
+- **MCP evolution**: Current tools are MCP-compatible, native MCP in Phase 8
+- **Real-time performance**: TUI optimized for 30fps with intelligent refresh throttling and streaming

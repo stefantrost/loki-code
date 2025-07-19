@@ -1,0 +1,60 @@
+# =============================================================================
+# Loki Code - HTTP Mode Configuration
+# =============================================================================
+# This configuration enables HTTP mode where the main application communicates
+# with the independent Loki LLM Server via HTTP instead of loading models directly.
+#
+# Usage:
+#   loki-code --config configs/http-mode.yaml
+#
+# Prerequisites:
+#   1. Start the LLM server: loki-llm-server
+#   2. Ensure server is running on http://localhost:8765
+# =============================================================================
+
+# Import defaults and override specific settings
+app:
+  name: "Loki Code (HTTP Mode)"
+  debug: false
+  log_level: "INFO"
+
+# LLM configuration for HTTP mode
+llm:
+  # Enable HTTP mode
+  use_llm_server: true                    # Use HTTP LLM server instead of direct LLM
+  llm_server_url: "http://localhost:8765"  # LLM server base URL
+  llm_server_timeout: 30.0                # LLM server timeout in seconds
+  llm_server_retries: 3                   # LLM server retry attempts
+  
+  # These settings are sent to the LLM server
+  max_tokens: 2048                        # Maximum tokens per response
+  temperature: 0.1                        # Response randomness
+  top_p: 0.9                             # Nucleus sampling parameter
+  
+  # Note: provider, model, base_url, and api_key are handled by the LLM server
+  # The server configuration determines which models and providers are available
+
+# Tool configuration (unchanged)
+tools:
+  enabled: true
+  auto_discovery: true
+  safety_checks: true
+  timeout: 30
+  
+# Agent configuration (unchanged)
+agent:
+  reasoning_strategy: "intelligent_react"
+  max_steps: 10
+  auto_approve_safe_actions: true
+  
+# UI configuration (unchanged)
+ui:
+  theme: "default"
+  color_scheme: "auto"
+  interactive_mode: true
+  
+# Performance configuration (unchanged)
+performance:
+  cache_enabled: true
+  max_cache_size: 1000
+  memory_limit: 4096

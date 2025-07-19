@@ -1,0 +1,9 @@
+FROM ~/Projects/models/deepseek-coder-v2-lite-instruct
+
+TEMPLATE """<｜begin▁of▁sentence｜>User: {{ .Prompt }}
+
+A:"""
+
+PARAMETER stop "<｜end▁of▁sentence｜>"
+PARAMETER temperature 0.1
+PARAMETER top_p 0.95

@@ -127,10 +127,10 @@ class TreeSitterParser:
                     
                     self.logger.info(f"Initialized Tree-sitter parser for {language.value}")
                 else:
-                    self.logger.warning(f"Could not load Tree-sitter language for {language.value}")
+                    self.logger.debug(f"Could not load Tree-sitter language for {language.value}")
                     
             except Exception as e:
-                self.logger.error(f"Failed to initialize {language.value} parser: {e}")
+                self.logger.debug(f"Failed to initialize {language.value} parser: {e}")
     
     def _import_tree_sitter_language(self, language_name: str) -> Optional[Language]:
         """Import a Tree-sitter language module.
@@ -144,19 +144,19 @@ class TreeSitterParser:
         try:
             if language_name == "python":
                 import tree_sitter_python as ts_python
-                return Language(ts_python.language(), "python")
+                return ts_python.language()
             elif language_name == "javascript":
                 import tree_sitter_javascript as ts_javascript
-                return Language(ts_javascript.language(), "javascript")
+                return ts_javascript.language()
             elif language_name == "typescript":
                 import tree_sitter_typescript as ts_typescript
-                return Language(ts_typescript.language(), "typescript")
+                return ts_typescript.language()
             else:
                 # For other languages, try dynamic import
                 module_name = f"tree_sitter_{language_name}"
                 try:
                     module = __import__(module_name)
-                    return Language(module.language(), language_name)
+                    return module.language()
                 except ImportError:
                     return None
                     
@@ -164,7 +164,7 @@ class TreeSitterParser:
             self.logger.debug(f"Tree-sitter language not available: {language_name} - {e}")
             return None
         except Exception as e:
-            self.logger.error(f"Error loading Tree-sitter language {language_name}: {e}")
+            self.logger.debug(f"Error loading Tree-sitter language {language_name}: {e}")
             return None
     
     def get_language_from_extension(self, file_path: str) -> Optional[SupportedLanguage]:

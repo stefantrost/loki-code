@@ -67,6 +67,12 @@ class RequestContext:
     user_preferences: Optional[UserPreferences] = None
     session_id: str = ""
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)
+    
+    # Unified context integration
+    recent_operations: List[Dict[str, Any]] = field(default_factory=list)
+    file_contexts: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    language_consistency: Optional[str] = None
+    session_metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -79,7 +85,7 @@ class AgentConfig:
     
     # LangChain settings
     use_langchain: bool = True
-    model_name: str = "llama3.1"
+    model_name: str = "qwen3:32b"
     temperature: float = 0.1
     max_tokens: int = 2000
     
@@ -102,5 +108,6 @@ class AgentConfig:
     
     # Development settings
     debug_mode: bool = False
-    log_langchain_calls: bool = False
+    log_langchain_calls: bool = True  # Always show reasoning steps
     simulate_tools: bool = False
+    show_agent_reasoning: bool = True  # Always display agent thinking process

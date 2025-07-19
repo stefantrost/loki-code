@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 
-from ...core.agent.loki_agent import RequestContext, AgentConfig
+from ...core.agent import RequestContext, AgentConfig
 from ...core.agent.conversation_manager import UserPreferences, ExplanationLevel, PersonalityStyle
 from ...tools.types import ToolContext, SafetySettings
 

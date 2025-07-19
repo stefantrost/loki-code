@@ -13,7 +13,7 @@ from ..config import load_config, ConfigurationError
 from ..utils import setup_logging, get_logger
 from ..core.llm_test import test_ollama_connection, format_test_report
 from ..core.providers import create_llm_provider, list_available_providers
-from ..tools.registry import ToolRegistry
+from ..core.tool_registry import get_global_registry
 from ..tools.file_reader import FileReaderTool
 
 
@@ -25,7 +25,7 @@ def handle_cli_command(args) -> int:
         int: Exit code (0 for success, non-zero for error)
     """
     try:
-        # Load configuration
+        # Load configuration (use built-in defaults if no config specified)
         config = load_config(args.config)
         setup_logging(config, verbose=args.verbose)
         logger = get_logger(__name__)
@@ -62,11 +62,11 @@ def _handle_test_llm(config, args) -> int:
     print("🔍 Testing LLM connection...")
     
     try:
-        provider = create_llm_provider(config)
-        test_result = test_ollama_connection(provider)
-        report = format_test_report(test_result)
+        # Test the connection using the config (not the provider object)
+        test_result = test_ollama_connection(config, verbose=args.verbose)
+        report = format_test_report(test_result, verbose=args.verbose)
         print(report)
-        return 0 if test_result.success else 1
+        return 0 if test_result.overall_status.value == "success" else 1
     except Exception as e:
         print(f"❌ LLM test failed: {e}")
         return 1
@@ -95,15 +95,15 @@ def _handle_list_tools(config, args) -> int:
     print("🔧 Available Tools:")
     
     try:
-        registry = ToolRegistry()
+        registry = get_global_registry()
         tools = registry.list_tools()
         
         if not tools:
             print("  No tools available")
             return 0
             
-        for tool_name, tool_info in tools.items():
-            print(f"  {tool_name}: {tool_info.get('description', 'No description')}")
+        for tool_schema in tools:
+            print(f"  {tool_schema.name}: {tool_schema.description}")
         return 0
     except Exception as e:
         print(f"❌ Error listing tools: {e}")
@@ -116,15 +116,17 @@ def _handle_tool_info(config, args) -> int:
     print(f"🔍 Tool Information: {tool_name}")
     
     try:
-        registry = ToolRegistry()
-        tool_info = registry.get_tool_info(tool_name)
+        registry = get_global_registry()
+        tool_schema = registry.get_tool_schema(tool_name)
         
-        if not tool_info:
+        if not tool_schema:
             print(f"❌ Tool '{tool_name}' not found")
             return 1
             
-        print(f"  Description: {tool_info.get('description', 'No description')}")
-        print(f"  Capabilities: {', '.join(tool_info.get('capabilities', []))}")
+        print(f"  Description: {tool_schema.description}")
+        print(f"  Capabilities: {', '.join([cap.value for cap in tool_schema.capabilities])}")
+        print(f"  Security Level: {tool_schema.security_level.value}")
+        print(f"  Confirmation Level: {tool_schema.confirmation_level.value}")
         return 0
     except Exception as e:
         print(f"❌ Error getting tool info: {e}")
@@ -172,39 +174,31 @@ def _handle_read_file(config, args) -> int:
 
 
 def _handle_chat_mode(config, args) -> int:
-    """Handle simple chat mode."""
-    print("💬 Starting simple chat mode...")
+    """Handle chat mode using the same agent system as TUI."""
+    print("💬 Starting chat mode with agent support...")
     
     if args.prompt:
-        # Single prompt mode
+        # Single prompt mode using agent system
         try:
-            provider = create_llm_provider(config)
-            from ..core.providers import GenerationRequest
-            
-            request = GenerationRequest(prompt=args.prompt)
-            response = provider.generate_sync(request)
-            print(f"\n🤖 {response.content}")
+            result = _process_chat_input(config, args.prompt)
+            print(f"\n🤖 {result}")
             return 0
         except Exception as e:
             print(f"❌ Error generating response: {e}")
             return 1
     else:
-        # Interactive chat mode (simplified)
-        print("🤖 Simple chat mode. Type 'exit' to quit.")
+        # Interactive chat mode using agent system
+        print("🤖 Chat mode with LLM classification and tool support. Type 'exit' to quit.")
         
         try:
-            provider = create_llm_provider(config)
-            
             while True:
                 try:
                     user_input = input("👤 You: ").strip()
                     if user_input.lower() in ['exit', 'quit', 'bye']:
                         break
                         
-                    from ..core.providers import GenerationRequest
-                    request = GenerationRequest(prompt=user_input)
-                    response = provider.generate_sync(request)
-                    print(f"🤖 Assistant: {response.content}\n")
+                    result = _process_chat_input(config, user_input)
+                    print(f"🤖 Assistant: {result}\n")
                     
                 except KeyboardInterrupt:
                     break
@@ -216,18 +210,109 @@ def _handle_chat_mode(config, args) -> int:
             return 1
 
 
+def _process_chat_input(config, user_input: str) -> str:
+    """Process chat input using the unified agent service."""
+    import asyncio
+    
+    async def process_async():
+        # Use the unified agent service
+        from ..core.services import get_agent_service
+        
+        try:
+            # Initialize the agent service
+            agent_service = await get_agent_service(config, "chat_session")
+            
+            # Process the message
+            response = await agent_service.process_message(user_input)
+            
+            # Format the response for display
+            formatted_response = response.content
+            
+            # Add tool usage information
+            if response.tools_used:
+                formatted_response += f"\n\n🔧 Tools used: {', '.join(response.tools_used)}"
+            
+            # Add reasoning steps in verbose mode (check if we have access to args)
+            try:
+                # Try to get verbose flag from config or default to False
+                verbose = getattr(config, 'verbose', False)
+                if verbose and response.metadata and 'reasoning_steps' in response.metadata:
+                    reasoning_steps = response.metadata['reasoning_steps']
+                    if reasoning_steps:
+                        formatted_response += "\n\n💭 Reasoning steps:"
+                        for step in reasoning_steps:
+                            formatted_response += f"\n  - {step}"
+            except:
+                pass  # Ignore if we can't access verbose flag
+            
+            return formatted_response
+            
+        except Exception as e:
+            return f"Error: {e}"
+    
+    # Run the async function
+    return asyncio.run(process_async())
+
+
 def _handle_tui_mode(config, args) -> int:
     """Handle Textual TUI mode (default)."""
-    print("🚀 Starting Textual TUI...")
-    
     try:
-        from ..ui.textual_app import LokiApp
-        app = LokiApp(config)
-        app.run()
-        return 0
-    except ImportError:
-        print("❌ Textual UI not available. Install with: pip install textual")
-        return 1
+        # Check if configured model is available
+        if not _check_model_available(config):
+            return 1
+        
+        # Use the transformed TUI without adapter for now
+        from ..ui.textual_app import create_loki_app
+        app = create_loki_app(config, use_adapter=False)
+        if app:
+            app.run()
+            return 0
+        else:
+            print("❌ Textual UI not available. Install with: pip install textual")
+            return 1
     except Exception as e:
         print(f"❌ Error starting TUI: {e}")
         return 1
+
+
+def _check_model_available(config) -> bool:
+    """
+    Silently check if the configured model is available.
+    Only shows error message if model is not available.
+    
+    Returns:
+        bool: True if model is available, False otherwise
+    """
+    try:
+        import requests
+        from requests.exceptions import ConnectionError, Timeout, RequestException
+        
+        # Get model and base URL from config
+        model = config.llm.model
+        base_url = config.llm.base_url
+        
+        # Check if Ollama is running and model is available
+        response = requests.get(f"{base_url}/api/tags", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            models = data.get('models', [])
+            model_names = [m.get('name', '') for m in models]
+            
+            if model in model_names:
+                return True
+            else:
+                print(f"❌ Model '{model}' not available. Download with: ollama pull {model}")
+                return False
+        else:
+            print(f"❌ Cannot connect to Ollama at {base_url}")
+            return False
+            
+    except (ConnectionError, Timeout):
+        print(f"❌ Ollama not running at {base_url}. Start with: ollama serve")
+        return False
+    except RequestException as e:
+        print(f"❌ Error checking model availability: {e}")
+        return False
+    except Exception as e:
+        # Silent fallback - don't block startup for unexpected errors
+        return True

@@ -374,7 +374,20 @@ class LoggingManager:
             "loki_code.config": "INFO",
         }
         
-        for module_name, level_name in default_loggers.items():
+        # Always enable LangChain loggers for agent reasoning visibility
+        langchain_loggers = {
+            "langchain": "INFO",
+            "langchain_core": "INFO", 
+            "langchain_community": "INFO",
+            "langchain.agents": "INFO",
+            "langchain.agents.agent": "INFO",
+            "langchain_core.agents": "INFO"
+        }
+        
+        # Combine all loggers
+        all_loggers = {**default_loggers, **langchain_loggers}
+        
+        for module_name, level_name in all_loggers.items():
                 logger = logging.getLogger(module_name)
                 level = getattr(logging, level_name.upper(), logging.INFO)
                 logger.setLevel(level)

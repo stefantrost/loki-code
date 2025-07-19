@@ -114,15 +114,27 @@ class AppConfig(BaseModel):
         return str(Path(v).expanduser())
 
 
+# =============================================================================
+# SINGLE SOURCE OF TRUTH FOR DEFAULT MODEL
+# =============================================================================
+# This is the ONLY place where the default model should be defined.
+# All other code should reference this constant or use the configuration system.
+# 
+# To change the default model:
+# 1. Update DEFAULT_MODEL below
+# 2. Update configs/default.yaml if needed
+# 3. Do NOT hardcode models anywhere else in the codebase
+DEFAULT_MODEL = "qwen3:32b"
+
 class LLMConfig(BaseModel):
     """Large Language Model provider configuration."""
     
     provider: Provider = Field(default=Provider.OLLAMA, description="LLM provider")
-    model: str = Field(default="codellama:7b", description="Model name")
+    model: str = Field(default=DEFAULT_MODEL, description="Model name")
     base_url: str = Field(default="http://localhost:11434", description="API base URL")
     api_key: Optional[str] = Field(default=None, description="API key if required")
     
-    timeout: int = Field(default=30, ge=1, le=300, description="Request timeout in seconds")
+    timeout: int = Field(default=300, ge=1, le=600, description="Request timeout in seconds (5 minutes for model loading)")
     max_tokens: int = Field(default=2048, ge=1, le=32768, description="Maximum tokens per response")
     temperature: float = Field(default=0.1, ge=0.0, le=2.0, description="Response randomness")
     top_p: float = Field(default=0.9, ge=0.0, le=1.0, description="Nucleus sampling parameter")
@@ -133,6 +145,12 @@ class LLMConfig(BaseModel):
     
     context_window: int = Field(default=4096, ge=512, le=128000, description="Context window size")
     preserve_context: bool = Field(default=True, description="Preserve conversation context")
+    
+    # HTTP LLM Server configuration
+    use_llm_server: bool = Field(default=False, description="Use HTTP LLM server instead of direct LLM")
+    llm_server_url: str = Field(default="http://localhost:8765", description="LLM server base URL")
+    llm_server_timeout: float = Field(default=180.0, ge=1.0, le=600.0, description="LLM server timeout in seconds")
+    llm_server_retries: int = Field(default=3, ge=0, le=10, description="LLM server retry attempts")
 
 
 class ToolsConfig(BaseModel):
@@ -143,7 +161,7 @@ class ToolsConfig(BaseModel):
     plugin_directories: List[str] = Field(default=[], description="Additional directories for plugin tools")
     
     # Execution settings
-    timeout_seconds: float = Field(default=30.0, ge=1.0, le=600.0, description="Default timeout for tool execution")
+    timeout_seconds: float = Field(default=180.0, ge=1.0, le=600.0, description="Default timeout for tool execution (3 minutes)")
     max_concurrent_tools: int = Field(default=3, ge=1, le=20, description="Maximum concurrent tool executions")
     max_retries: int = Field(default=2, ge=1, le=10, description="Maximum number of retries")
     retry_delay_seconds: float = Field(default=1.0, ge=0.1, le=10.0, description="Delay between retries")

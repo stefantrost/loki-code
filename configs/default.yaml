@@ -15,7 +15,7 @@
 # -----------------------------------------------------------------------------
 # Core application configuration that affects overall behavior
 app:
-  name: "Loki Code"                    # Application display name
+  name: "Loki Code (HTTP Mode)"       # Application display name
   version: "0.1.0"                     # Current version (auto-updated)
   debug: false                         # Enable debug mode (boolean)
   log_level: "INFO"                    # Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL
@@ -29,13 +29,13 @@ app:
 llm:
   # Primary LLM provider configuration
   provider: "ollama"                   # Provider: "ollama", "openai", "anthropic", "local"
-  model: "codellama:7b"               # Model name/identifier
+  model: "qwen3:32b"                  # Model name/identifier
   base_url: "http://localhost:11434"  # Base URL for API endpoint
   api_key: null                       # API key (if required by provider)
   
   # Request configuration
   timeout: 30                         # Request timeout in seconds (integer)
-  max_tokens: 2048                    # Maximum tokens per response (integer)
+  max_tokens: 256                     # Maximum tokens per response (integer)
   temperature: 0.1                    # Response randomness: 0.0 (deterministic) to 1.0 (creative)
   top_p: 0.9                         # Nucleus sampling parameter (float, 0.0-1.0)
   
@@ -47,6 +47,12 @@ llm:
   # Context management
   context_window: 4096                # Maximum context window size
   preserve_context: true              # Whether to maintain conversation context
+  
+  # HTTP LLM Server configuration (default mode)
+  use_llm_server: false               # Use HTTP LLM server instead of direct LLM
+  llm_server_url: "http://localhost:8765"  # LLM server base URL
+  llm_server_timeout: 30.0            # LLM server timeout in seconds
+  llm_server_retries: 3               # LLM server retry attempts
 
 # -----------------------------------------------------------------------------
 # Tool Settings

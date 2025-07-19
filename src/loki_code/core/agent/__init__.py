@@ -12,8 +12,12 @@ The agent system now consists of:
 This implements proper LangChain integration as specified in Phase 4.
 """
 
-# Main agent class (LangChain-based)
-from .langchain_agent import LokiLangChainAgent as LokiCodeAgent, LokiLangChainAgentFactory
+# Main agent classes (LangGraph-based)
+from .langgraph_agent import LokiLangGraphAgent, LokiLangGraphAgentFactory
+
+# Default to LangGraph agent (modern approach)
+LokiCodeAgent = LokiLangGraphAgent
+LokiCodeAgentFactory = LokiLangGraphAgentFactory
 
 # Type definitions
 from .types import (
@@ -22,7 +26,7 @@ from .types import (
 )
 
 # Backward compatibility
-from .loki_agent import LokiAgent
+LokiAgent = LokiCodeAgent  # Alias for backward compatibility
 
 # Existing managers
 from .permission_manager import (
@@ -39,9 +43,11 @@ from .conversation_manager import (
 )
 
 __all__ = [
-    # Main agent (LangChain-based)
-    "LokiCodeAgent",
-    "LokiLangChainAgentFactory",
+    # Main agents
+    "LokiCodeAgent",  # Default (LangGraph)
+    "LokiCodeAgentFactory",  # Default (LangGraph)
+    "LokiLangGraphAgent",  # Modern
+    "LokiLangGraphAgentFactory",  # Modern
     
     # Types
     "AgentConfig", 

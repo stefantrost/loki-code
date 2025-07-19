@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from ..core.agent.loki_agent import LokiCodeAgent, AgentConfig, RequestContext, AgentState
+from ..core.agent import LokiCodeAgent, AgentConfig, RequestContext, AgentState
 from ..core.agent.permission_manager import PermissionManager, PermissionConfig, ToolAction, PermissionResult
 from .fixtures.agent_test_scenarios import create_test_agent_config, TestProjectManager, TestProjectFactory
 

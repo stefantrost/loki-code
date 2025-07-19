@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Any
 
-from .langchain_agent import LokiLangChainAgent, LokiLangChainAgentFactory
+from . import LokiCodeAgent, LokiCodeAgentFactory
 from .types import AgentConfig, RequestContext, AgentState
 from .permission_manager import PermissionManager, PermissionConfig, ToolAction, PermissionLevel
 from .safety_manager import SafetyManager, SafetyConfig, TaskContext

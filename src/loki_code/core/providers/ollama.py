@@ -24,7 +24,7 @@ from .base import (
     ProviderModelError,
     ProviderTimeoutError
 )
-from ..llm_client import OllamaClient, LLMRequest, LLMClientError, LLMConnectionError, LLMModelError, LLMTimeoutError
+from ..llm_client import LLMClient, LLMClientError, LLMConnectionError, LLMServerError, LLMTimeoutError
 from ...config.models import LokiCodeConfig
 
 
@@ -32,7 +32,7 @@ class OllamaProvider(BaseLLMProvider, AsyncProviderMixin):
     """
     Ollama provider implementation.
     
-    This provider wraps the existing OllamaClient functionality and adapts it
+    This provider wraps the existing LLMClient functionality and adapts it
     to the provider abstraction interface, maintaining backward compatibility
     while enabling the provider abstraction system.
     """
@@ -44,7 +44,11 @@ class OllamaProvider(BaseLLMProvider, AsyncProviderMixin):
             config: LokiCodeConfig instance containing LLM settings
         """
         super().__init__(config)
-        self.client = OllamaClient(config)
+        self.client = LLMClient(
+            base_url=config.base_url,
+            timeout=config.timeout,
+            max_retries=config.max_retries
+        )
         self._cached_models: Optional[List[ModelInfo]] = None
         self._cache_timestamp: Optional[float] = None
         self._cache_ttl = 300  # Cache models for 5 minutes
@@ -61,25 +65,34 @@ class OllamaProvider(BaseLLMProvider, AsyncProviderMixin):
         start_time = time.perf_counter()
         
         try:
-            # Convert provider request to client request
-            llm_request = self._convert_to_llm_request(request)
+            # Prepare inference config
+            config = {
+                "max_tokens": request.max_tokens,
+                "temperature": request.temperature,
+                "top_p": request.top_p,
+                "stop": request.stop_sequences
+            }
             
-            # Use existing client for generation
-            response = self.client.send_prompt(llm_request, stream=False)
+            # Use new client interface
+            response = await self.client.inference(
+                message=request.prompt,
+                config=config,
+                model_name=request.model_name
+            )
             
             # Convert client response to provider response
             return self._convert_to_generation_response(response, request, start_time)
             
         except LLMConnectionError as e:
             raise ProviderConnectionError(str(e), "ollama") from e
-        except LLMModelError as e:
+        except LLMServerError as e:
             raise ProviderModelError(str(e), "ollama") from e
         except LLMTimeoutError as e:
             raise ProviderTimeoutError(str(e), "ollama") from e
         except LLMClientError as e:
             raise ProviderConnectionError(str(e), "ollama") from e
     
-    @handle_provider_operation("stream_generate", timeout=60.0)
+    @handle_provider_operation("stream_generate", timeout=180.0)
     async def stream_generate(self, request: GenerationRequest) -> AsyncIterator[str]:
         """Generate text with streaming response using Ollama.
         
@@ -89,20 +102,21 @@ class OllamaProvider(BaseLLMProvider, AsyncProviderMixin):
         Yields:
             Individual tokens or text chunks as they're generated
         """
-        # Convert provider request to client request
-        llm_request = self._convert_to_llm_request(request)
-        llm_request.stream = True
+        # Prepare inference config
+        config = {
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+            "top_p": request.top_p,
+            "stop": request.stop_sequences
+        }
         
-        # Use the async provider mixin to run sync code in executor
-        def _run_streaming():
-            return self.client.send_prompt(llm_request, stream=True)
-        
-        # Run the synchronous streaming in a thread with timeout
-        stream_generator = await self.run_sync_in_executor(_run_streaming, timeout=60.0)
-        
-        # Yield tokens from the generator
-        for token in stream_generator:
-            yield token
+        # Use streaming inference
+        async for chunk in self.client.inference_stream(
+            message=request.prompt,
+            config=config,
+            model_name=request.model_name
+        ):
+            yield chunk
     
     async def health_check(self) -> bool:
         """Check if Ollama is healthy and responding.
@@ -203,23 +217,6 @@ class OllamaProvider(BaseLLMProvider, AsyncProviderMixin):
                 raise
             raise ProviderConnectionError(f"Failed to list Ollama models: {e}", "ollama") from e
     
-    def _convert_to_llm_request(self, request: GenerationRequest) -> LLMRequest:
-        """Convert provider request to client request format.
-        
-        Args:
-            request: Provider generation request
-            
-        Returns:
-            LLMRequest for the existing client
-        """
-        return LLMRequest(
-            prompt=request.prompt,
-            model=request.model,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            stream=request.stream,
-            system_prompt=request.system_prompt
-        )
     
     def _convert_to_generation_response(
         self, 
@@ -230,7 +227,7 @@ class OllamaProvider(BaseLLMProvider, AsyncProviderMixin):
         """Convert client response to provider response format.
         
         Args:
-            response: Response from the existing client
+            response: AgentResponse from the LLM client
             original_request: Original generation request
             start_time: Request start time for timing calculation
             
@@ -241,16 +238,17 @@ class OllamaProvider(BaseLLMProvider, AsyncProviderMixin):
         
         return GenerationResponse(
             content=response.content,
-            model=response.model,
+            model=original_request.model_name or "unknown",
             provider="ollama",
-            finish_reason="stop" if response.finished else "incomplete",
-            total_tokens=response.total_tokens,
-            prompt_tokens=response.prompt_tokens,
-            completion_tokens=response.completion_tokens,
+            finish_reason="stop",
+            total_tokens=response.metadata.get("total_tokens", 0) if response.metadata else 0,
+            prompt_tokens=response.metadata.get("prompt_tokens", 0) if response.metadata else 0,
+            completion_tokens=response.metadata.get("completion_tokens", 0) if response.metadata else 0,
             response_time_ms=response_time,
             provider_metadata={
-                "ollama_response_time": response.response_time_ms,
-                "model_loaded": True
+                "response_time": response_time,
+                "model_loaded": True,
+                "confidence": response.confidence
             }
         )
     

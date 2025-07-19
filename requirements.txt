@@ -9,9 +9,14 @@ langchain-core>=0.3.0
 langchain-community>=0.3.0
 langchain-text-splitters>=0.3.0
 langsmith>=0.4.0
+langgraph>=0.2.0
 
-# Optional: For Ollama integration (already included in langchain-community)
-# ollama
+# Transformers integration
+transformers>=4.36.0
+torch>=2.0.0
+accelerate>=0.20.0
+bitsandbytes>=0.41.0
+langchain-huggingface>=0.1.0
 
 # Optional: For OpenAI integration
 # langchain-openai

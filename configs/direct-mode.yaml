@@ -1,0 +1,69 @@
+# =============================================================================
+# Loki Code - Direct LLM Mode Configuration  
+# =============================================================================
+# This configuration enables direct LLM mode where the application loads
+# models directly using providers like Ollama, instead of using the HTTP server.
+#
+# Usage:
+#   loki-code --config configs/direct-mode.yaml
+#
+# Prerequisites:
+#   1. Ollama installed and running: ollama serve
+#   2. Required models pulled: ollama pull codellama:7b
+# =============================================================================
+
+# Import defaults and override specific settings
+app:
+  name: "Loki Code (Direct Mode)"
+  debug: false
+  log_level: "INFO"
+
+# LLM configuration for direct mode
+llm:
+  # Disable HTTP mode
+  use_llm_server: false               # Use direct LLM instead of HTTP server
+  
+  # Direct LLM provider configuration
+  provider: "ollama"                  # Provider: "ollama", "openai", "anthropic", "local"
+  model: "codellama:7b"              # Model name/identifier
+  base_url: "http://localhost:11434" # Base URL for API endpoint
+  api_key: null                      # API key (if required by provider)
+  
+  # Request configuration
+  timeout: 30                        # Request timeout in seconds
+  max_tokens: 2048                   # Maximum tokens per response
+  temperature: 0.1                   # Response randomness
+  top_p: 0.9                        # Nucleus sampling parameter
+  
+  # Retry and fallback configuration
+  max_retries: 3                     # Maximum retry attempts
+  retry_delay: 1.0                   # Delay between retries in seconds
+  
+  # Context management
+  context_window: 4096               # Maximum context window size
+  preserve_context: true             # Whether to maintain conversation context
+
+# Tool configuration (unchanged)
+tools:
+  enabled: true
+  auto_discovery: true
+  safety_checks: true
+  timeout: 30
+  
+# Agent configuration (unchanged)
+agent:
+  reasoning_strategy: "intelligent_react"
+  max_steps: 10
+  auto_approve_safe_actions: true
+  
+# UI configuration (unchanged)
+ui:
+  theme: "default"
+  color_scheme: "auto"
+  interactive_mode: true
+  
+# Performance configuration (unchanged)
+performance:
+  cache_enabled: true
+  max_cache_size: 1000
+  memory_limit: 4096
