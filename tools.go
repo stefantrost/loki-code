@@ -211,7 +211,7 @@ func executeUpdateFile(args map[string]interface{}) (string, error) {
 		return "", fmt.Errorf("path argument is required and must be a string")
 	}
 
-	content, ok := args["content"].(string)
+	newContent, ok := args["content"].(string)
 	if !ok {
 		return "", fmt.Errorf("content argument is required and must be a string")
 	}
@@ -224,7 +224,31 @@ func executeUpdateFile(args map[string]interface{}) (string, error) {
 		return "", fmt.Errorf("file does not exist: %s", path)
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	// Read current file content
+	currentContent, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read current file: %v", err)
+	}
+
+	currentContentStr := string(currentContent)
+	
+	// Check if content is actually different
+	if currentContentStr == newContent {
+		return fmt.Sprintf("No changes needed for %s (content is identical)", path), nil
+	}
+
+	// Show diff and get user confirmation
+	confirmed, err := showDiffAndConfirm(currentContentStr, newContent, path)
+	if err != nil {
+		return "", fmt.Errorf("failed to get user confirmation: %v", err)
+	}
+
+	if !confirmed {
+		return fmt.Sprintf("File update cancelled by user: %s", path), nil
+	}
+
+	// Apply the changes
+	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
 		return "", fmt.Errorf("failed to update file: %v", err)
 	}
 
@@ -298,3 +322,4 @@ func validatePath(path string) error {
 
 	return nil
 }
+
