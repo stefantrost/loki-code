@@ -126,6 +126,16 @@ func GetAvailableTools() []Tool {
 }
 
 func ExecuteTool(toolCall ToolCall) (string, error) {
+	return ExecuteToolWithPlanMode(toolCall, false)
+}
+
+func ExecuteToolWithPlanMode(toolCall ToolCall, planMode bool) (string, error) {
+	// Check if tool is allowed in plan mode
+	if planMode && !isToolAllowedInPlanMode(toolCall.Function.Name) {
+		return fmt.Sprintf("⚠️ Plan Mode: Cannot execute '%s'. This tool is restricted in plan mode.\n\nConsider adding this operation to your execution plan:\n- %s with the specified parameters", 
+			toolCall.Function.Name, toolCall.Function.Name), nil
+	}
+	
 	switch toolCall.Function.Name {
 	case "create_file":
 		return executeCreateFile(toolCall.Function.Arguments)
@@ -140,6 +150,14 @@ func ExecuteTool(toolCall ToolCall) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown tool: %s", toolCall.Function.Name)
 	}
+}
+
+func isToolAllowedInPlanMode(toolName string) bool {
+	allowedTools := map[string]bool{
+		"read_file":  true,
+		"list_files": true,
+	}
+	return allowedTools[toolName]
 }
 
 func executeCreateFile(args map[string]interface{}) (string, error) {

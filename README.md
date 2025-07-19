@@ -2,6 +2,15 @@
 
 A simple Go-based coding agent that connects to local Ollama models for interactive chat with function calling capabilities.
 
+## Table of Contents
+- [Prerequisites](#prerequisites)
+- [Setup](#setup)
+- [Usage](#usage)
+- [Features](#features)
+- [Context Management](#context-management)
+- [Architecture](#architecture)
+- [License](#license)
+
 ## Prerequisites
 
 - Go 1.19+ installed
@@ -46,17 +55,7 @@ A simple Go-based coding agent that connects to local Ollama models for interact
 - Graceful shutdown handling
 - Error handling for network and API issues
 
-## Available Tools
-
-The AI can execute the following file operations:
-
-- **create_file**: Create new files with specified content
-- **read_file**: Read the contents of existing files
-- **update_file**: Update existing files with new content
-- **delete_file**: Delete files
-- **list_files**: List files in directories
-
-## Example Usage
+### Example Usage
 
 Ask the AI to perform file operations:
 
@@ -67,12 +66,14 @@ Ask the AI to perform file operations:
 > Update README.md to add a new section
 ```
 
-## Special Commands
+### Special Commands
 
-- `/clear` - Clear conversation context
-- `/compact` - Compress context using AI summarization
-- `/stats` - Show context statistics (tokens used, message count)
-- `exit` or `quit` - Exit the application
+- `/clear`: Clear conversation context
+- `/compact`: Compress context using AI summarization
+- `/plan`: Enter plan mode (read-only, creates execution plans)
+- `/execute`: Exit plan mode (enable all tools)
+- `/stats`: Show context statistics (tokens used, message count, current mode)
+- `exit` or `quit`: Exit the application
 
 ## Context Management
 
@@ -81,21 +82,63 @@ Ask the AI to perform file operations:
 - **Tool Call Preservation**: Maintains tool call sequences during trimming
 - **Context Compacting**: AI-powered summarization to compress long conversations
 - **Real-time Statistics**: Shows token usage and message count
+- **Dynamic Context Detection**: Automatically detects model context window size
 
-### Context Compacting
+### Dynamic Context Detection
 
-When conversations get long, use `/compact` to:
-- Summarize older messages using the AI
-- Preserve recent conversation and tool calls
-- Reduce token usage by 60-80% typically
-- Maintain conversation continuity
+The application automatically detects your model's context window at startup:
 
-Example:
+```bash
+Loki Code - AI Coding Agent
+Connecting to Ollama (qwen3:32b)...
+✓ Detected context window: 32,768 tokens
+✓ Set context limit: 24,576 tokens (75% utilization)
 ```
-> /compact
-Compacting conversation context...
-🔄 Generating conversation summary...
-✓ Context compacted: 1200 → 450 tokens (saved 750 tokens)
+
+**Benefits:**
+- **Model Agnostic**: Works with any Ollama model automatically
+- **Optimal Utilization**: Uses 75% of available context (25% reserved for responses)
+- **Safe Fallback**: Uses 4,000 tokens if detection fails
+- **Future Proof**: Adapts to new models without code changes
+
+## Plan Mode
+
+Plan Mode enables safe analysis and planning without executing changes. Perfect for exploring codebases and creating detailed execution plans.
+
+### Features
+- **Read-Only Operations**: Only `read_file` and `list_files` are allowed
+- **Planning Focus**: AI creates structured, multi-step execution plans
+- **Safe Exploration**: Analyze code without risk of changes
+- **Visual Indicators**: `[PLAN] >` prompt shows current mode
+
+### Usage Example
+```bash
+> /plan
+🎯 Plan Mode Activated!
+
+[PLAN] > Refactor the authentication system to use JWT tokens
+
+📋 EXECUTION PLAN
+
+## Overview
+Refactor current session-based authentication to JWT token system
+
+## Steps
+1. **Install JWT Library**
+   - Add github.com/golang-jwt/jwt to go.mod
+   
+2. **Create JWT Utils**
+   - File: utils/jwt.go
+   - Functions: GenerateToken, ValidateToken
+   
+3. **Update Auth Handlers**
+   - File: handlers/auth.go
+   - Modify login to return JWT instead of session
+
+[PLAN] > /execute
+⚡ Execute Mode Activated!
+
+> # Now execute the plan steps
 ```
 
 ## Architecture
@@ -104,3 +147,9 @@ Compacting conversation context...
 - `orchestrator.go`: Core Ollama API client with streaming and function calling support
 - `tools.go`: File manipulation tools and execution logic
 - `context_manager.go`: Intelligent conversation context and token management
+
+## License
+
+MIT License
+
+For details, see [LICENSE.md](LICENSE.md)

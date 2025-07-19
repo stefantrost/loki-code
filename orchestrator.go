@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,8 @@ type OllamaClient struct {
 	baseURL        string
 	client         *http.Client
 	contextManager *ContextManager
+	planMode       bool
+	modelName      string
 }
 
 type ChatMessage struct {
@@ -35,14 +38,36 @@ type ChatResponse struct {
 	Done      bool        `json:"done"`
 }
 
-func NewOllamaClient(baseURL string) *OllamaClient {
-	return &OllamaClient{
+type ModelShowRequest struct {
+	Model string `json:"model"`
+}
+
+type ModelShowResponse struct {
+	ModelInfo map[string]interface{} `json:"model_info"`
+}
+
+func NewOllamaClient(baseURL, modelName string) *OllamaClient {
+	client := &OllamaClient{
 		baseURL: baseURL,
 		client: &http.Client{
 			Timeout: 0, // No timeout for streaming responses
 		},
-		contextManager: NewContextManager(4000), // 4K tokens for qwen3:32b
+		contextManager: NewContextManager(4000), // Default fallback
+		modelName:      modelName,
 	}
+	
+	// Try to detect the actual context window
+	if contextWindow, err := client.DetectContextWindow(); err == nil {
+		optimalLimit := calculateOptimalContextLimit(contextWindow)
+		client.contextManager.SetMaxTokens(optimalLimit)
+		fmt.Printf("✓ Detected context window: %d tokens\n", contextWindow)
+		fmt.Printf("✓ Set context limit: %d tokens (75%% utilization)\n", optimalLimit)
+	} else {
+		fmt.Printf("⚠️ Could not detect context window: %v\n", err)
+		fmt.Printf("✓ Using default context limit: 4,000 tokens\n")
+	}
+	
+	return client
 }
 
 func (c *OllamaClient) StreamChat(userInput string) error {
@@ -63,7 +88,7 @@ func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 	currentTokens, messageCount, maxTokens := c.contextManager.GetStats()
 	fmt.Printf("[Context: %d/%d tokens, %d messages]\n", currentTokens, maxTokens, messageCount-1) // -1 for system prompt
 	request := ChatRequest{
-		Model:    "qwen3:32b",
+		Model:    c.modelName,
 		Messages: messages,
 		Stream:   true,
 		Tools:    GetAvailableTools(),
@@ -142,7 +167,7 @@ func (c *OllamaClient) handleToolCalls(assistantMessage ChatMessage) error {
 	for _, toolCall := range assistantMessage.ToolCalls {
 		fmt.Printf("Calling %s...\n", toolCall.Function.Name)
 		
-		result, err := ExecuteTool(toolCall)
+		result, err := ExecuteToolWithPlanMode(toolCall, c.planMode)
 		if err != nil {
 			result = fmt.Sprintf("Error: %v", err)
 		}
@@ -209,7 +234,7 @@ func (c *OllamaClient) CompactMessages(messages []ChatMessage) (string, error) {
 	
 	// Create request for summarization
 	request := ChatRequest{
-		Model:    "qwen3:32b",
+		Model:    c.modelName,
 		Messages: summaryMessages,
 		Stream:   false, // We want complete response
 	}
@@ -247,4 +272,91 @@ func (c *OllamaClient) CompactContext() error {
 
 func (c *OllamaClient) CanCompact() bool {
 	return c.contextManager.CanCompact()
+}
+
+func (c *OllamaClient) EnablePlanMode() {
+	c.planMode = true
+	// Update context manager with plan mode system prompt
+	c.contextManager.SetPlanMode(true)
+}
+
+func (c *OllamaClient) DisablePlanMode() {
+	c.planMode = false
+	// Update context manager with normal system prompt
+	c.contextManager.SetPlanMode(false)
+}
+
+func (c *OllamaClient) IsInPlanMode() bool {
+	return c.planMode
+}
+
+func (c *OllamaClient) DetectContextWindow() (int, error) {
+	request := ModelShowRequest{
+		Model: c.modelName,
+	}
+
+	jsonData, err := json.Marshal(request)
+	if err != nil {
+		return 0, fmt.Errorf("error marshaling request: %v", err)
+	}
+
+	resp, err := c.client.Post(c.baseURL+"/api/show", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return 0, fmt.Errorf("error making request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("API returned status: %s", resp.Status)
+	}
+
+	var showResponse ModelShowResponse
+	if err := json.NewDecoder(resp.Body).Decode(&showResponse); err != nil {
+		return 0, fmt.Errorf("error decoding response: %v", err)
+	}
+
+	// Look for any key ending with ".context_length" (dynamic detection)
+	for key, value := range showResponse.ModelInfo {
+		if strings.HasSuffix(key, ".context_length") {
+			if contextLength, ok := value.(float64); ok {
+				fmt.Printf("🔍 Found context length key: %s = %d\n", key, int(contextLength))
+				return int(contextLength), nil
+			}
+		}
+	}
+
+	// Fallback: try some generic field names
+	fallbackFields := []string{
+		"context_length", 
+		"max_context_length",
+		"num_ctx_max",
+	}
+
+	for _, field := range fallbackFields {
+		if value, exists := showResponse.ModelInfo[field]; exists {
+			if contextLength, ok := value.(float64); ok {
+				fmt.Printf("🔍 Found context length (fallback): %s = %d\n", field, int(contextLength))
+				return int(contextLength), nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("context length not found in model info")
+}
+
+func calculateOptimalContextLimit(maxContext int) int {
+	// Reserve 25% for responses and JSON overhead
+	usableContext := int(float64(maxContext) * 0.75)
+	
+	// Minimum safety limit
+	if usableContext < 2000 {
+		return 2000
+	}
+	
+	// Maximum practical limit (avoid memory issues)
+	if usableContext > 50000 {
+		return 50000
+	}
+	
+	return usableContext
 }

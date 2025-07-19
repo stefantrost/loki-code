@@ -5,10 +5,12 @@ import (
 )
 
 type ContextManager struct {
-	messages      []ChatMessage
-	maxTokens     int
-	systemPrompt  ChatMessage
-	retainCount   int // Number of recent exchanges to retain
+	messages          []ChatMessage
+	maxTokens         int
+	systemPrompt      ChatMessage
+	planModePrompt    ChatMessage
+	retainCount       int  // Number of recent exchanges to retain
+	planMode          bool // Whether plan mode is active
 }
 
 func NewContextManager(maxTokens int) *ContextManager {
@@ -38,11 +40,37 @@ BEHAVIOR:
 - Maintain conversation context efficiently`,
 	}
 
+	planModePrompt := ChatMessage{
+		Role: "system",
+		Content: `You are Loki Code, an AI coding assistant in PLAN MODE. You specialize in analyzing tasks and creating detailed execution plans.
+
+🎯 PLAN MODE ACTIVE - You can:
+- Read files and analyze code (read_file, list_files)
+- Create detailed multi-step execution plans
+- Break down complex tasks into actionable steps
+- Analyze codebases and provide insights
+
+⚠️ PLAN MODE RESTRICTIONS - You CANNOT:
+- Create, update, or delete files
+- Execute any write operations
+- Make changes to the codebase
+
+BEHAVIOR:
+- When given a task, break it down into a clear, numbered plan
+- Use read-only tools to analyze the current state
+- Focus on creating comprehensive, actionable plans
+- Explain the reasoning behind each step
+- Identify dependencies and potential issues
+- Structure plans with clear sections: Overview, Analysis, Steps, Considerations`,
+	}
+
 	return &ContextManager{
-		messages:     []ChatMessage{},
-		maxTokens:    maxTokens,
-		systemPrompt: systemPrompt,
-		retainCount:  6, // Keep last 3 user+assistant exchanges
+		messages:       []ChatMessage{},
+		maxTokens:      maxTokens,
+		systemPrompt:   systemPrompt,
+		planModePrompt: planModePrompt,
+		retainCount:    6, // Keep last 3 user+assistant exchanges
+		planMode:       false,
 	}
 }
 
@@ -52,8 +80,15 @@ func (cm *ContextManager) AddMessage(message ChatMessage) {
 }
 
 func (cm *ContextManager) GetMessages() []ChatMessage {
-	// Always start with system prompt
-	result := []ChatMessage{cm.systemPrompt}
+	// Always start with appropriate system prompt
+	var activePrompt ChatMessage
+	if cm.planMode {
+		activePrompt = cm.planModePrompt
+	} else {
+		activePrompt = cm.systemPrompt
+	}
+	
+	result := []ChatMessage{activePrompt}
 	result = append(result, cm.messages...)
 	return result
 }
@@ -193,29 +228,54 @@ type CompactClient interface {
 }
 
 func (cm *ContextManager) CanCompact() bool {
-	// Need at least 8 messages to make compacting worthwhile
-	// (excluding system prompt, so at least 9 total)
-	return len(cm.messages) >= 8
+	// Check if we're using enough context to warrant compacting
+	currentTokens := cm.estimateTokens(cm.GetMessages())
+	
+	// Only compact if we're using at least 60% of available context
+	threshold := int(float64(cm.maxTokens) * 0.6)
+	
+	// Also require minimum message count to ensure there's meaningful content
+	minMessages := 6
+	
+	return currentTokens >= threshold && len(cm.messages) >= minMessages
 }
 
 func (cm *ContextManager) CompactContext(client CompactClient) error {
+	currentTokens := cm.estimateTokens(cm.GetMessages())
 	if !cm.CanCompact() {
-		return fmt.Errorf("not enough messages to compact (need at least 8, have %d)", len(cm.messages))
+		threshold := int(float64(cm.maxTokens) * 0.6)
+		return fmt.Errorf("context not ready for compacting (using %d/%d tokens, need %d+ tokens)", 
+			currentTokens, cm.maxTokens, threshold)
 	}
 
 	if cm.HasToolCallsInProgress() {
 		return fmt.Errorf("cannot compact while tool calls are in progress")
 	}
 
-	// Identify compactable range
-	recentCount := 6 // Keep last 6 messages
-	if len(cm.messages) <= recentCount {
-		return fmt.Errorf("not enough messages to compact")
+	// Calculate how much context to keep recent (aim for ~25% of max tokens)
+	targetRecentTokens := int(float64(cm.maxTokens) * 0.25)
+	
+	// Find cutoff point by working backwards and estimating tokens
+	recentMessages := []ChatMessage{}
+	
+	for i := len(cm.messages) - 1; i >= 0; i-- {
+		testMessages := append([]ChatMessage{cm.messages[i]}, recentMessages...)
+		testTokens := cm.estimateTokens(testMessages)
+		
+		if testTokens > targetRecentTokens && len(recentMessages) > 0 {
+			break // Stop before exceeding target
+		}
+		
+		recentMessages = testMessages
 	}
-
-	compactEndIndex := len(cm.messages) - recentCount
+	
+	// Ensure we have something to compact
+	compactEndIndex := len(cm.messages) - len(recentMessages)
+	if compactEndIndex <= 1 {
+		return fmt.Errorf("not enough content to compact (would keep %d recent messages)", len(recentMessages))
+	}
+	
 	messagesToCompact := cm.messages[:compactEndIndex]
-	recentMessages := cm.messages[compactEndIndex:]
 
 	// Get summary from LLM
 	fmt.Println("🔄 Generating conversation summary...")
@@ -238,9 +298,13 @@ func (cm *ContextManager) CompactContext(client CompactClient) error {
 	
 	newTokens := cm.estimateTokens(cm.GetMessages())
 	savedTokens := oldTokens - newTokens
+	compactedMessageCount := len(messagesToCompact)
+	keptMessageCount := len(recentMessages)
 
 	fmt.Printf("✓ Context compacted: %d → %d tokens (saved %d tokens)\n", 
 		oldTokens, newTokens, savedTokens)
+	fmt.Printf("📊 Compacted %d messages → 1 summary, kept %d recent messages\n", 
+		compactedMessageCount, keptMessageCount)
 	
 	return nil
 }
@@ -259,4 +323,12 @@ Keep the summary brief but preserve essential context for continuing the convers
 Organize the summary logically and use clear, concise language.
 
 CONVERSATION TO SUMMARIZE:`
+}
+
+func (cm *ContextManager) SetPlanMode(enabled bool) {
+	cm.planMode = enabled
+}
+
+func (cm *ContextManager) IsInPlanMode() bool {
+	return cm.planMode
 }
