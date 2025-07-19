@@ -1,152 +1,49 @@
-# Loki Code
+# Loki Code - AI Coding Agent
 
-A local coding agent using LangChain and local LLMs for intelligent code assistance and automation.
+A simple Go-based coding agent that connects to local Ollama models for interactive chat.
 
-## Description
+## Prerequisites
 
-Loki Code is designed to be your local coding companion, providing AI-powered assistance without relying on external APIs. Built with modularity in mind, it can be extended with various tools and capabilities to enhance your development workflow.
+- Go 1.19+ installed
+- Ollama running locally on port 11434
+- qwen3:32b model pulled in Ollama
 
-## Installation
+## Setup
 
-### Development Installation
-
-1. Clone the repository:
+1. Make sure Ollama is running:
    ```bash
-   git clone <repository-url>
-   cd loki-code
+   ollama serve
    ```
 
-2. Install in development mode:
+2. Pull the qwen3:32b model (if not already available):
    ```bash
-   pip install -e .
+   ollama pull qwen3:32b
    ```
 
-3. For development with additional tools:
+## Usage
+
+1. Build the application:
    ```bash
-   pip install -e ".[dev]"
+   go build -o loki-code .
    ```
 
-## Quick Start
-
-### Basic Usage
-
-After installation, you can use Loki Code from the command line:
-
-```bash
-# Check available LLM providers
-python main.py --list-providers
-
-# Test LLM connection (requires Ollama running)
-python main.py --test-llm
-
-# Start interactive chat mode
-python main.py --chat
-
-# Send a single prompt
-python main.py --chat --prompt "Help me write a Python function"
-
-# Show help and all options
-python main.py --help
-```
-
-### Python API Usage
-
-You can also use Loki Code programmatically:
-
-```python
-import loki_code
-from loki_code.core.providers import create_llm_provider, GenerationRequest
-from loki_code.config import load_config
-
-# Load configuration
-config = load_config()
-
-# Create LLM provider
-provider = create_llm_provider(config)
-
-# Generate text
-request = GenerationRequest(prompt="Hello, world!")
-response = provider.generate_sync(request)
-print(response.content)
-```
-
-## Project Structure
-
-```
-loki-code/
-├── src/loki_code/          # Main package
-│   ├── core/               # Core functionality
-│   │   ├── providers/      # LLM provider abstraction system
-│   │   ├── llm_client.py   # Basic LLM communication
-│   │   └── llm_test.py     # LLM connection testing
-│   ├── tools/              # Agent tools and utilities
-│   ├── ui/                 # User interface components
-│   ├── config/             # Configuration management
-│   │   ├── models.py       # Pydantic configuration models
-│   │   └── loader.py       # Configuration loading logic
-│   └── utils/              # Helper utilities
-│       └── logging.py      # Production logging system
-├── tests/                  # Test suite
-├── configs/                # Configuration files
-│   └── default.yaml        # Default configuration
-├── docs/                   # Documentation
-└── pyproject.toml          # Modern Python package setup
-```
-
-## Provider System
-
-Loki Code uses a flexible provider abstraction system that supports multiple LLM providers:
-
-### Currently Supported
-- **Ollama** - Local LLM execution with model management
-  - Supports streaming responses
-  - Dynamic model switching
-  - Local execution for privacy
-
-### Architecture Features
-- **Provider Abstraction** - Unified interface across all providers
-- **Async/Sync Support** - Both asynchronous and synchronous APIs
-- **Fallback Mechanisms** - Automatic provider switching on failure
-- **Task-Aware Models** - Different models for different tasks
-- **Easy Extension** - Simple to add new providers
-
-### Future Providers (Planned)
-- OpenAI API (for fallback scenarios)
-- Anthropic Claude (if allowed)
-- Hugging Face local models
-- Custom API endpoints
-
-## Development Setup
-
-1. Install development dependencies:
+2. Run the application:
    ```bash
-   pip install -e ".[dev]"
+   ./loki-code
    ```
 
-2. Run tests:
-   ```bash
-   pytest
-   ```
+3. Start chatting with the AI! Type your questions and see streaming responses.
 
-3. Code formatting:
-   ```bash
-   black src/ tests/
-   ```
+4. Exit by typing `exit`, `quit`, or pressing Ctrl+C.
 
-4. Type checking:
-   ```bash
-   mypy src/
-   ```
+## Features
 
-## Requirements
+- Real-time streaming responses from the AI model
+- Simple CLI interface
+- Graceful shutdown handling
+- Error handling for network and API issues
 
-- Python 3.9+
-- Local LLM setup (documentation coming soon)
+## Architecture
 
-## License
-
-MIT License - see LICENSE file for details.
-
-## Contributing
-
-This project is in early development. Contribution guidelines will be established as the project matures.
+- `main.go`: CLI interface and user interaction loop
+- `orchestrator.go`: Core Ollama API client with streaming support

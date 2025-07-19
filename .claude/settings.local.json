@@ -29,7 +29,8 @@
       "Bash(pytest:*)",
       "Bash(pkill:*)",
       "Bash(cp:*)",
-      "Bash(sed:*)"
+      "Bash(sed:*)",
+      "Bash(go build:*)"
     ],
     "deny": []
   }
