@@ -12,7 +12,7 @@ import (
 func main() {
 	fmt.Println("Loki Code - AI Coding Agent")
 	fmt.Println("Connecting to Ollama (qwen3:32b)...")
-	fmt.Println("Type 'exit' or 'quit' to stop, or press Ctrl+C")
+	fmt.Println("Type 'exit', 'quit' to stop, '/clear' to clear context, '/compact' to compress context, or press Ctrl+C")
 	fmt.Println("----------------------------------------")
 
 	client := NewOllamaClient("http://localhost:11434")
@@ -44,6 +44,30 @@ func main() {
 		if input == "exit" || input == "quit" {
 			fmt.Println("Goodbye!")
 			break
+		}
+
+		if input == "/clear" {
+			client.ClearContext()
+			fmt.Println("Context cleared!")
+			continue
+		}
+
+		if input == "/stats" {
+			tokens, messages, maxTokens := client.GetContextStats()
+			fmt.Printf("Context Stats: %d/%d tokens, %d messages\n", tokens, maxTokens, messages)
+			continue
+		}
+
+		if input == "/compact" {
+			if !client.CanCompact() {
+				fmt.Println("Not enough messages to compact (need at least 8 messages)")
+				continue
+			}
+			fmt.Println("Compacting conversation context...")
+			if err := client.CompactContext(); err != nil {
+				fmt.Printf("Compacting failed: %v\n", err)
+			}
+			continue
 		}
 
 		fmt.Print("Assistant: ")
