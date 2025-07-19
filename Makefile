@@ -2,8 +2,9 @@
 
 # Variables
 BINARY_NAME=loki-code
-MODEL_NAME=qwen3:32b
+MODEL_NAME?=qwen3:32b
 OLLAMA_PORT=11434
+OLLAMA_URL?=http://localhost:$(OLLAMA_PORT)
 
 # Default target
 .PHONY: help
@@ -19,11 +20,20 @@ help:
 	@echo "  start-ollama - Start Ollama service"
 	@echo "  stop-ollama  - Stop Ollama service"
 	@echo "  check-ollama - Check if Ollama is running"
-	@echo "  pull-model   - Pull the required model (qwen3:32b)"
+	@echo "  pull-model   - Pull the required model ($(MODEL_NAME))"
 	@echo "  test-api     - Test Ollama API connection"
 	@echo "  dev          - Setup, start Ollama, and run the app"
 	@echo "  install      - Install binary to /usr/local/bin"
 	@echo "  uninstall    - Remove binary from /usr/local/bin"
+	@echo ""
+	@echo "Variables (override with MODEL_NAME=... make run):"
+	@echo "  MODEL_NAME   - Model to use (default: $(MODEL_NAME))"
+	@echo "  OLLAMA_URL   - Ollama server URL (default: $(OLLAMA_URL))"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make run                          # Use default model"
+	@echo "  MODEL_NAME=llama3:8b make run     # Use specific model"
+	@echo "  ./$(BINARY_NAME) --model mistral:7b  # Direct binary usage"
 
 # Build the application
 .PHONY: build
@@ -39,8 +49,8 @@ start: run
 # Build and run the application
 .PHONY: run
 run: build
-	@echo "Starting $(BINARY_NAME)..."
-	@./$(BINARY_NAME)
+	@echo "Starting $(BINARY_NAME) with model $(MODEL_NAME)..."
+	@./$(BINARY_NAME) --model $(MODEL_NAME) --url $(OLLAMA_URL)
 
 # Clean build artifacts
 .PHONY: clean

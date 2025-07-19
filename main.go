@@ -2,18 +2,59 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
 )
 
 func main() {
-	fmt.Println("Loki Code - AI Coding Agent")
-	fmt.Println("Connecting to Ollama (qwen3:32b)...")
+	// Command line flags
+	modelFlag := flag.String("model", "", "Model to use (default: qwen3:32b)")
+	modelShort := flag.String("m", "", "Model to use (short form)")
+	ollamaURL := flag.String("url", "http://localhost:11434", "Ollama server URL")
+	listModels := flag.Bool("list-models", false, "List available models and exit")
+	
+	flag.Parse()
 
-	client := NewOllamaClient("http://localhost:11434", "qwen3:32b")
+	// Determine model to use (priority: flag > env > default)
+	modelName := "qwen3:32b" // default
+	
+	// Check environment variable
+	if envModel := os.Getenv("LOKI_MODEL"); envModel != "" {
+		modelName = envModel
+	}
+	
+	// Check command line flags (highest priority)
+	if *modelFlag != "" {
+		modelName = *modelFlag
+	} else if *modelShort != "" {
+		modelName = *modelShort
+	}
+
+	fmt.Println("Loki Code - AI Coding Agent")
+	
+	// Handle --list-models flag
+	if *listModels {
+		fmt.Println("Available models:")
+		cmd := exec.Command("ollama", "list")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err := cmd.Run()
+		if err != nil {
+			fmt.Printf("Error running ollama list: %v\n", err)
+			fmt.Println("Make sure Ollama is installed and running")
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	
+	fmt.Printf("Connecting to Ollama (%s)...\n", modelName)
+
+	client := NewOllamaClient(*ollamaURL, modelName)
 	
 	fmt.Println("Type 'exit', 'quit' to stop, '/plan' to enter plan mode, '/execute' to exit plan mode, or press Ctrl+C")
 	fmt.Println("----------------------------------------")
