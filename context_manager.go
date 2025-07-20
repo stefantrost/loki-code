@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 type ContextManager struct {
@@ -16,7 +18,7 @@ type ContextManager struct {
 func NewContextManager(maxTokens int) *ContextManager {
 	systemPrompt := ChatMessage{
 		Role: "system",
-		Content: `You are Loki Code, an AI coding assistant specialized in helping developers with programming tasks, code analysis, and file operations.
+		Content: fmt.Sprintf(`You are Loki Code, an AI coding assistant specialized in helping developers with programming tasks, code analysis, and file operations.
 
 GUIDELINES:
 - Keep responses brief, focused, and actionable
@@ -25,24 +27,19 @@ GUIDELINES:
 - Provide concise code examples when helpful
 - Ask clarifying questions if requirements are unclear
 
-AVAILABLE TOOLS:
-- create_file: Create new files with specified content
-- read_file: Read contents of existing files  
-- update_file: Modify existing files with new content
-- delete_file: Remove files
-- list_files: List directory contents
+%s
 
 BEHAVIOR:
 - Be direct and helpful
 - Focus on solving the immediate problem
 - Use tools when appropriate for file operations
 - Explain your reasoning briefly when using tools
-- Maintain conversation context efficiently`,
+- Maintain conversation context efficiently`, generateToolSchema()),
 	}
 
 	planModePrompt := ChatMessage{
 		Role: "system",
-		Content: `You are Loki Code, an AI coding assistant in PLAN MODE. You specialize in analyzing tasks and creating detailed execution plans.
+		Content: fmt.Sprintf(`You are Loki Code, an AI coding assistant in PLAN MODE. You specialize in analyzing tasks and creating detailed execution plans.
 
 🎯 PLAN MODE ACTIVE - You can:
 - Read files and analyze code (read_file, list_files)
@@ -55,13 +52,15 @@ BEHAVIOR:
 - Execute any write operations
 - Make changes to the codebase
 
+%s
+
 BEHAVIOR:
 - When given a task, break it down into a clear, numbered plan
 - Use read-only tools to analyze the current state
 - Focus on creating comprehensive, actionable plans
 - Explain the reasoning behind each step
 - Identify dependencies and potential issues
-- Structure plans with clear sections: Overview, Analysis, Steps, Considerations`,
+- Structure plans with clear sections: Overview, Analysis, Steps, Considerations`, generateToolSchema()),
 	}
 
 	return &ContextManager{
@@ -331,4 +330,36 @@ func (cm *ContextManager) SetPlanMode(enabled bool) {
 
 func (cm *ContextManager) IsInPlanMode() bool {
 	return cm.planMode
+}
+
+// generateToolSchema creates a formatted JSON string representation of available tools
+func generateToolSchema() string {
+	tools := GetAvailableTools()
+	
+	var schema strings.Builder
+	schema.WriteString("Available tools (use exact JSON format):\n\n")
+	
+	for i, tool := range tools {
+		// Convert tool to pretty JSON
+		toolJSON, err := json.MarshalIndent(tool, "", "  ")
+		if err != nil {
+			continue
+		}
+		
+		schema.WriteString(fmt.Sprintf("%d. %s\n", i+1, tool.Function.Name))
+		schema.WriteString(fmt.Sprintf("   %s\n", tool.Function.Description))
+		schema.WriteString(fmt.Sprintf("   Schema: %s\n\n", string(toolJSON)))
+	}
+	
+	schema.WriteString("TOOL CALL FORMAT EXAMPLES:\n\n")
+	schema.WriteString("Standard format (preferred):\n")
+	schema.WriteString(`{"name": "read_file", "arguments": {"path": "example.go"}}`)
+	schema.WriteString("\n\nAlternative format (also supported):\n")
+	schema.WriteString(`{"function": {"name": "read_file", "arguments": {"path": "example.go"}}}`)
+	schema.WriteString("\n\nIMPORTANT:\n")
+	schema.WriteString("- Use valid JSON syntax\n")
+	schema.WriteString("- Include all required parameters\n")
+	schema.WriteString("- Wrap JSON in explanation text if needed\n")
+	
+	return schema.String()
 }

@@ -16,6 +16,8 @@ type OllamaClient struct {
 	contextManager *ContextManager
 	planMode       bool
 	modelName      string
+	debug          bool
+	parser         *ToolCallParser
 }
 
 type ChatMessage struct {
@@ -46,6 +48,31 @@ type ModelShowResponse struct {
 	ModelInfo map[string]interface{} `json:"model_info"`
 }
 
+// debugLog prints debug messages when debug mode is enabled
+func (c *OllamaClient) debugLog(format string, args ...interface{}) {
+	if c.debug {
+		fmt.Printf("[DEBUG] "+format+"\n", args...)
+	}
+}
+
+// SetDebug enables or disables debug logging
+func (c *OllamaClient) SetDebug(enabled bool) {
+	c.debug = enabled
+	c.parser = NewToolCallParser(enabled) // Update parser with debug setting
+	if enabled {
+		fmt.Println("[DEBUG] Debug logging enabled")
+	}
+}
+
+// getKeys returns the keys of a map for debugging
+func getKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func NewOllamaClient(baseURL, modelName string) *OllamaClient {
 	client := &OllamaClient{
 		baseURL: baseURL,
@@ -54,6 +81,7 @@ func NewOllamaClient(baseURL, modelName string) *OllamaClient {
 		},
 		contextManager: NewContextManager(4000), // Default fallback
 		modelName:      modelName,
+		parser:         NewToolCallParser(false), // Will be updated in SetDebug
 	}
 	
 	// Try to detect the actual context window
@@ -87,6 +115,17 @@ func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 	// Display context stats
 	currentTokens, messageCount, maxTokens := c.contextManager.GetStats()
 	fmt.Printf("[Context: %d/%d tokens, %d messages]\n", currentTokens, maxTokens, messageCount-1) // -1 for system prompt
+	
+	c.debugLog("Sending %d messages to model %s", len(messages), c.modelName)
+	for i, msg := range messages {
+		c.debugLog("Message %d: role=%s, content_length=%d, tool_calls=%d", 
+			i+1, msg.Role, len(msg.Content), len(msg.ToolCalls))
+		if c.debug && len(msg.Content) > 0 {
+			// Show full content in debug
+			c.debugLog("  Content: %s", msg.Content)
+		}
+	}
+	
 	request := ChatRequest{
 		Model:    c.modelName,
 		Messages: messages,
@@ -128,6 +167,8 @@ func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 		if chatResponse.Message.Content != "" {
 			fmt.Print(chatResponse.Message.Content)
 			currentMessage.Content += chatResponse.Message.Content
+			c.debugLog("Streaming chunk received: %q", chatResponse.Message.Content)
+			c.debugLog("Current total content length: %d", len(currentMessage.Content))
 		}
 
 		// Check for tool calls
@@ -139,6 +180,8 @@ func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 		if chatResponse.Done {
 			fmt.Println()
 			currentMessage.Role = "assistant"
+			c.debugLog("Streaming complete. Final message content: %q", currentMessage.Content)
+			c.debugLog("Final message length: %d characters", len(currentMessage.Content))
 			break
 		}
 	}
@@ -149,6 +192,18 @@ func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 		c.contextManager.AddMessage(currentMessage)
 		return c.handleToolCalls(currentMessage)
 	} else if currentMessage.Content != "" {
+		c.debugLog("No native tool calls found, checking content for JSON tool calls")
+		c.debugLog("About to parse content with length %d: %q", len(currentMessage.Content), currentMessage.Content)
+		// Check for tool calls in content (fallback for models that don't use native tool calling)
+		contentToolCalls := c.parser.ParseToolCallsFromContent(currentMessage.Content)
+		if len(contentToolCalls) > 0 {
+			c.debugLog("Found %d tool calls in content", len(contentToolCalls))
+			// Add tool calls to the message and handle them
+			currentMessage.ToolCalls = contentToolCalls
+			c.contextManager.AddMessage(currentMessage)
+			return c.handleToolCalls(currentMessage)
+		}
+		c.debugLog("No tool calls found, treating as regular response")
 		// Add regular assistant response to context
 		c.contextManager.AddMessage(currentMessage)
 	}
@@ -162,14 +217,19 @@ func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 
 func (c *OllamaClient) handleToolCalls(assistantMessage ChatMessage) error {
 	fmt.Println("\n🔧 Executing tools...")
+	c.debugLog("Handling %d tool calls", len(assistantMessage.ToolCalls))
 	
 	// Execute each tool call
-	for _, toolCall := range assistantMessage.ToolCalls {
+	for i, toolCall := range assistantMessage.ToolCalls {
 		fmt.Printf("Calling %s...\n", toolCall.Function.Name)
+		c.debugLog("Tool call %d: %s with args %v", i+1, toolCall.Function.Name, toolCall.Function.Arguments)
 		
 		result, err := ExecuteToolWithPlanMode(toolCall, c.planMode)
 		if err != nil {
 			result = fmt.Sprintf("Error: %v", err)
+			c.debugLog("Tool execution failed: %v", err)
+		} else {
+			c.debugLog("Tool result length: %d characters", len(result))
 		}
 		
 		// Add tool result to context manager
@@ -178,6 +238,7 @@ func (c *OllamaClient) handleToolCalls(assistantMessage ChatMessage) error {
 			Content: result,
 		}
 		c.contextManager.AddMessage(toolMessage)
+		c.debugLog("Added tool result to context with role 'tool'")
 		
 		fmt.Printf("✓ %s completed\n", toolCall.Function.Name)
 	}
@@ -186,6 +247,7 @@ func (c *OllamaClient) handleToolCalls(assistantMessage ChatMessage) error {
 	
 	// Continue conversation with updated context
 	messages := c.contextManager.GetMessages()
+	c.debugLog("Continuing conversation with %d messages after tool execution", len(messages))
 	return c.StreamChatWithHistory(messages)
 }
 

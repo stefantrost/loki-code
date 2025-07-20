@@ -17,6 +17,7 @@ func main() {
 	modelShort := flag.String("m", "", "Model to use (short form)")
 	ollamaURL := flag.String("url", "http://localhost:11434", "Ollama server URL")
 	listModels := flag.Bool("list-models", false, "List available models and exit")
+	debugFlag := flag.Bool("debug", false, "Enable debug logging")
 	
 	flag.Parse()
 
@@ -55,6 +56,7 @@ func main() {
 	fmt.Printf("Connecting to Ollama (%s)...\n", modelName)
 
 	client := NewOllamaClient(*ollamaURL, modelName)
+	client.SetDebug(*debugFlag)
 	
 	fmt.Println("Type 'exit', 'quit' to stop, '/plan' to enter plan mode, '/execute' to exit plan mode, or press Ctrl+C")
 	fmt.Println("----------------------------------------")
