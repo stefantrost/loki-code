@@ -30,8 +30,25 @@ type ToolFunction struct {
 	Arguments map[string]interface{} `json:"arguments"`
 }
 
+// Project detection structures
+type ProjectInfo struct {
+	Language    string
+	HasConfig   bool
+	ConfigFiles []string
+	Analyzers   []AnalyzerInfo
+}
+
+type AnalyzerInfo struct {
+	Name       string
+	Command    string
+	Args       []string
+	Available  bool
+	ConfigFile string
+}
+
 func GetAvailableTools() []Tool {
-	return []Tool{
+	// Base tools that are always available
+	baseTools := []Tool{
 		{
 			Type: "function",
 			Function: Function{
@@ -233,6 +250,52 @@ func GetAvailableTools() []Tool {
 			},
 		},
 	}
+	
+	// Add static analyzer tool if available
+	projectInfo := detectProject()
+	if len(projectInfo.Analyzers) > 0 {
+		analyzerTool := createAnalyzerTool(projectInfo)
+		baseTools = append(baseTools, analyzerTool)
+	}
+	
+	return baseTools
+}
+
+func createAnalyzerTool(projectInfo ProjectInfo) Tool {
+	availableAnalyzers := getAnalyzerNames(projectInfo.Analyzers)
+	description := fmt.Sprintf("Run static analysis for %s project (available: %s)", 
+		projectInfo.Language, 
+		strings.Join(availableAnalyzers, ", "))
+	
+	return Tool{
+		Type: "function",
+		Function: Function{
+			Name:        "analyze_code",
+			Description: description,
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"scope": map[string]interface{}{
+						"type":        "string",
+						"description": "Analysis scope: 'file' (specific file), 'package' (current package/directory), or 'all' (entire project)",
+					},
+					"file_path": map[string]interface{}{
+						"type":        "string",
+						"description": "Specific file to analyze (required for scope='file')",
+					},
+					"analyzer": map[string]interface{}{
+						"type":        "string",
+						"description": fmt.Sprintf("Analyzer to use: %s (default: auto-select best)", strings.Join(availableAnalyzers, ", ")),
+					},
+					"fix": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Auto-fix issues when supported (default: false)",
+					},
+				},
+				"required": []string{},
+			},
+		},
+	}
 }
 
 func ExecuteTool(toolCall ToolCall) (string, error) {
@@ -267,6 +330,8 @@ func ExecuteToolWithPlanMode(toolCall ToolCall, planMode bool) (string, error) {
 		return executeGetPwd(toolCall.Function.Arguments)
 	case "tree_view":
 		return executeTreeView(toolCall.Function.Arguments)
+	case "analyze_code":
+		return executeAnalyzeCode(toolCall.Function.Arguments)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", toolCall.Function.Name)
 	}
@@ -280,6 +345,7 @@ func isToolAllowedInPlanMode(toolName string) bool {
 		"grep_content": true,
 		"get_pwd":      true,
 		"tree_view":    true,
+		"analyze_code": true, // Static analysis is read-only and safe in plan mode
 		// exec_command is NOT allowed in plan mode for security
 	}
 	return allowedTools[toolName]
@@ -426,6 +492,239 @@ func executeListFiles(args map[string]interface{}) (string, error) {
 	}
 
 	return "Files in " + path + ":\n" + strings.Join(files, "\n"), nil
+}
+
+// Utility functions for project detection
+func commandExists(command string) bool {
+	_, err := exec.LookPath(command)
+	return err == nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func findConfigFile(candidates []string) string {
+	for _, file := range candidates {
+		if fileExists(file) {
+			return file
+		}
+	}
+	return ""
+}
+
+func hasPythonFiles() bool {
+	// Check for common Python project indicators
+	pythonIndicators := []string{
+		"requirements.txt", "pyproject.toml", "setup.py", 
+		"setup.cfg", "Pipfile", "poetry.lock",
+	}
+	
+	for _, indicator := range pythonIndicators {
+		if fileExists(indicator) {
+			return true
+		}
+	}
+	
+	// Check for .py files in current directory
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		return false
+	}
+	
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".py") {
+			return true
+		}
+	}
+	
+	return false
+}
+
+// Project detection functions
+func detectProject() ProjectInfo {
+	// Check Go first (most specific)
+	if fileExists("go.mod") {
+		return detectGoProject()
+	}
+	
+	// Check Node.js/TypeScript
+	if fileExists("package.json") {
+		return detectNodeProject()
+	}
+	
+	// Check Python (less specific, so check last)
+	if hasPythonFiles() {
+		return detectPythonProject()
+	}
+	
+	return ProjectInfo{Language: "unknown"}
+}
+
+func detectGoProject() ProjectInfo {
+	analyzers := []AnalyzerInfo{}
+	
+	// golangci-lint (preferred)
+	if commandExists("golangci-lint") {
+		analyzers = append(analyzers, AnalyzerInfo{
+			Name:       "golangci-lint",
+			Command:    "golangci-lint",
+			Args:       []string{"run"},
+			Available:  true,
+			ConfigFile: findConfigFile([]string{".golangci.yml", ".golangci.yaml"}),
+		})
+	}
+	
+	// go vet (always available with Go installation)
+	if commandExists("go") {
+		analyzers = append(analyzers, AnalyzerInfo{
+			Name:      "go vet",
+			Command:   "go",
+			Args:      []string{"vet", "./..."},
+			Available: true,
+		})
+	}
+	
+	return ProjectInfo{
+		Language:  "go",
+		HasConfig: fileExists("go.mod"),
+		Analyzers: analyzers,
+	}
+}
+
+func detectPythonProject() ProjectInfo {
+	analyzers := []AnalyzerInfo{}
+	
+	// ruff (preferred - fast and modern)
+	if commandExists("ruff") {
+		analyzers = append(analyzers, AnalyzerInfo{
+			Name:       "ruff",
+			Command:    "ruff",
+			Args:       []string{"check"},
+			Available:  true,
+			ConfigFile: findConfigFile([]string{"ruff.toml", "pyproject.toml"}),
+		})
+	}
+	
+	// pylint (comprehensive analysis)
+	if commandExists("pylint") {
+		analyzers = append(analyzers, AnalyzerInfo{
+			Name:       "pylint",
+			Command:    "pylint",
+			Args:       []string{},
+			Available:  true,
+			ConfigFile: findConfigFile([]string{".pylintrc", "pylint.ini"}),
+		})
+	}
+	
+	// flake8 (widely used)
+	if commandExists("flake8") {
+		analyzers = append(analyzers, AnalyzerInfo{
+			Name:       "flake8",
+			Command:    "flake8",
+			Args:       []string{},
+			Available:  true,
+			ConfigFile: findConfigFile([]string{".flake8", "setup.cfg"}),
+		})
+	}
+	
+	// python syntax check (basic fallback)
+	if commandExists("python3") {
+		analyzers = append(analyzers, AnalyzerInfo{
+			Name:      "python3",
+			Command:   "python3",
+			Args:      []string{"-m", "py_compile"},
+			Available: true,
+		})
+	} else if commandExists("python") {
+		analyzers = append(analyzers, AnalyzerInfo{
+			Name:      "python",
+			Command:   "python",
+			Args:      []string{"-m", "py_compile"},
+			Available: true,
+		})
+	}
+	
+	hasConfig := fileExists("pyproject.toml") || fileExists("requirements.txt") || fileExists("setup.py")
+	
+	return ProjectInfo{
+		Language:  "python",
+		HasConfig: hasConfig,
+		Analyzers: analyzers,
+	}
+}
+
+func detectNodeProject() ProjectInfo {
+	analyzers := []AnalyzerInfo{}
+	isTypeScript := fileExists("tsconfig.json")
+	
+	// TypeScript type checking (highest priority for TS projects)
+	if isTypeScript && commandExists("tsc") {
+		analyzers = append(analyzers, AnalyzerInfo{
+			Name:       "tsc",
+			Command:    "tsc",
+			Args:       []string{"--noEmit"},
+			Available:  true,
+			ConfigFile: "tsconfig.json",
+		})
+	}
+	
+	// ESLint (if config exists)
+	eslintConfig := findConfigFile([]string{
+		".eslintrc.js", ".eslintrc.json", ".eslintrc.yml",
+		".eslintrc.yaml", "eslint.config.js", ".eslintrc",
+	})
+	if eslintConfig != "" && commandExists("eslint") {
+		analyzers = append(analyzers, AnalyzerInfo{
+			Name:       "eslint",
+			Command:    "eslint",
+			Args:       []string{},
+			Available:  true,
+			ConfigFile: eslintConfig,
+		})
+	}
+	
+	// JSHint fallback
+	if commandExists("jshint") {
+		analyzers = append(analyzers, AnalyzerInfo{
+			Name:      "jshint",
+			Command:   "jshint",
+			Args:      []string{},
+			Available: true,
+		})
+	}
+	
+	// Basic Node.js syntax check (always try as fallback)
+	if commandExists("node") {
+		analyzers = append(analyzers, AnalyzerInfo{
+			Name:      "node",
+			Command:   "node",
+			Args:      []string{"--check"},
+			Available: true,
+		})
+	}
+	
+	language := "javascript"
+	if isTypeScript {
+		language = "typescript"
+	}
+	
+	return ProjectInfo{
+		Language:  language,
+		HasConfig: fileExists("package.json"),
+		Analyzers: analyzers,
+	}
+}
+
+func getAnalyzerNames(analyzers []AnalyzerInfo) []string {
+	var names []string
+	for _, analyzer := range analyzers {
+		if analyzer.Available {
+			names = append(names, analyzer.Name)
+		}
+	}
+	return names
 }
 
 // Command whitelist for security
@@ -676,6 +975,241 @@ func getAvailableCommands() string {
 		commands = append(commands, cmd)
 	}
 	return strings.Join(commands, ", ")
+}
+
+func executeAnalyzeCode(args map[string]interface{}) (string, error) {
+	projectInfo := detectProject()
+	if len(projectInfo.Analyzers) == 0 {
+		return fmt.Sprintf("No static analyzers detected for %s projects in current directory", projectInfo.Language), nil
+	}
+	
+	// Parse arguments
+	scope := "package" // default scope
+	if s, hasScope := args["scope"].(string); hasScope {
+		scope = s
+	}
+	
+	var filePath string
+	if fp, hasFilePath := args["file_path"].(string); hasFilePath {
+		filePath = fp
+	}
+	
+	// Validate file path if provided
+	if filePath != "" {
+		if err := validatePath(filePath); err != nil {
+			return "", err
+		}
+		if !fileExists(filePath) {
+			return "", fmt.Errorf("file not found: %s", filePath)
+		}
+	}
+	
+	// Select analyzer
+	analyzer := selectAnalyzer(args, projectInfo.Analyzers)
+	if analyzer == nil {
+		return "No suitable analyzer found", nil
+	}
+	
+	// Build command arguments
+	cmdArgs, err := buildAnalyzerArgs(*analyzer, scope, filePath, args)
+	if err != nil {
+		return "", err
+	}
+	
+	// Execute analyzer
+	result, err := runAnalyzer(*analyzer, cmdArgs)
+	if err != nil {
+		return fmt.Sprintf("Analysis failed with %s: %v\nOutput: %s", analyzer.Name, err, result), nil
+	}
+	
+	// Format results
+	return formatAnalysisResults(analyzer.Name, result, projectInfo.Language, scope, filePath), nil
+}
+
+func selectAnalyzer(args map[string]interface{}, analyzers []AnalyzerInfo) *AnalyzerInfo {
+	// If user specified an analyzer, try to find it
+	if analyzerName, hasAnalyzer := args["analyzer"].(string); hasAnalyzer {
+		for _, analyzer := range analyzers {
+			if analyzer.Available && analyzer.Name == analyzerName {
+				return &analyzer
+			}
+		}
+	}
+	
+	// Auto-select best available analyzer (first in list is preferred)
+	for _, analyzer := range analyzers {
+		if analyzer.Available {
+			return &analyzer
+		}
+	}
+	
+	return nil
+}
+
+func buildAnalyzerArgs(analyzer AnalyzerInfo, scope, filePath string, args map[string]interface{}) ([]string, error) {
+	cmdArgs := make([]string, len(analyzer.Args))
+	copy(cmdArgs, analyzer.Args)
+	
+	// Handle auto-fix flag
+	shouldFix := false
+	if fix, hasFix := args["fix"].(bool); hasFix {
+		shouldFix = fix
+	}
+	
+	switch analyzer.Name {
+	case "golangci-lint":
+		if shouldFix {
+			cmdArgs = append(cmdArgs, "--fix")
+		}
+		if scope == "file" && filePath != "" {
+			cmdArgs = append(cmdArgs, filePath)
+		} else if scope == "package" {
+			cmdArgs = append(cmdArgs, "./...")
+		}
+		
+	case "go vet":
+		if scope == "file" && filePath != "" {
+			cmdArgs = []string{"vet", filePath}
+		}
+		
+	case "ruff":
+		if shouldFix {
+			cmdArgs = []string{"check", "--fix"}
+		}
+		if scope == "file" && filePath != "" {
+			cmdArgs = append(cmdArgs, filePath)
+		} else {
+			cmdArgs = append(cmdArgs, ".")
+		}
+		
+	case "pylint":
+		if scope == "file" && filePath != "" {
+			cmdArgs = append(cmdArgs, filePath)
+		} else {
+			cmdArgs = append(cmdArgs, ".")
+		}
+		
+	case "flake8":
+		if scope == "file" && filePath != "" {
+			cmdArgs = append(cmdArgs, filePath)
+		} else {
+			cmdArgs = append(cmdArgs, ".")
+		}
+		
+	case "tsc":
+		// tsc --noEmit doesn't need file-specific args
+		
+	case "eslint":
+		if shouldFix {
+			cmdArgs = append(cmdArgs, "--fix")
+		}
+		if scope == "file" && filePath != "" {
+			cmdArgs = append(cmdArgs, filePath)
+		} else {
+			cmdArgs = append(cmdArgs, ".")
+		}
+		
+	case "jshint":
+		if scope == "file" && filePath != "" {
+			cmdArgs = append(cmdArgs, filePath)
+		} else {
+			cmdArgs = append(cmdArgs, ".")
+		}
+		
+	case "node":
+		if scope == "file" && filePath != "" {
+			cmdArgs = append(cmdArgs, filePath)
+		} else {
+			return nil, fmt.Errorf("node --check requires a specific file")
+		}
+		
+	case "python3", "python":
+		if scope == "file" && filePath != "" {
+			cmdArgs = append(cmdArgs, filePath)
+		} else {
+			return nil, fmt.Errorf("python syntax check requires a specific file")
+		}
+	}
+	
+	return cmdArgs, nil
+}
+
+func runAnalyzer(analyzer AnalyzerInfo, cmdArgs []string) (string, error) {
+	cmd := exec.Command(analyzer.Command, cmdArgs...)
+	cmd.Dir = "." // Run in current directory
+	
+	// Set timeout to prevent hanging
+	timeout := 60 * time.Second
+	
+	// Execute with timeout
+	done := make(chan error, 1)
+	var output []byte
+	var err error
+	
+	go func() {
+		output, err = cmd.CombinedOutput()
+		done <- err
+	}()
+	
+	select {
+	case err := <-done:
+		outputStr := string(output)
+		
+		// Many analyzers return non-zero exit codes for issues found
+		// This is not necessarily an error
+		if err != nil {
+			// Check if it's a real error (command not found, etc.) vs issues found
+			if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() > 2 {
+				return outputStr, err
+			}
+		}
+		
+		// Limit output size
+		if len(outputStr) > 15000 {
+			outputStr = outputStr[:15000] + "\n... (output truncated at 15,000 characters)"
+		}
+		
+		return outputStr, nil
+		
+	case <-time.After(timeout):
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		return "", fmt.Errorf("analysis timed out after %v", timeout)
+	}
+}
+
+func formatAnalysisResults(analyzerName, output, language, scope, filePath string) string {
+	var result strings.Builder
+	
+	result.WriteString(fmt.Sprintf("🔍 Static Analysis Results (%s)\n", analyzerName))
+	result.WriteString(fmt.Sprintf("Language: %s | Scope: %s", language, scope))
+	if filePath != "" {
+		result.WriteString(fmt.Sprintf(" | File: %s", filePath))
+	}
+	result.WriteString("\n")
+	result.WriteString(strings.Repeat("=", 50) + "\n\n")
+	
+	if strings.TrimSpace(output) == "" {
+		result.WriteString("✅ No issues found!\n")
+	} else {
+		result.WriteString(output)
+		
+		// Add helpful context based on analyzer
+		result.WriteString("\n" + strings.Repeat("-", 30) + "\n")
+		switch analyzerName {
+		case "golangci-lint":
+			result.WriteString("💡 Tip: Use 'analyze_code' with 'fix': true to auto-fix some issues")
+		case "ruff":
+			result.WriteString("💡 Tip: Use 'analyze_code' with 'fix': true to auto-fix formatting and imports")
+		case "eslint":
+			result.WriteString("💡 Tip: Use 'analyze_code' with 'fix': true to auto-fix style issues")
+		case "tsc":
+			result.WriteString("💡 TypeScript type checking complete. Fix type errors to improve code safety.")
+		}
+	}
+	
+	return result.String()
 }
 
 func validatePath(path string) error {
