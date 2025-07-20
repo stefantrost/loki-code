@@ -18,6 +18,8 @@ func main() {
 	ollamaURL := flag.String("url", "http://localhost:11434", "Ollama server URL")
 	listModels := flag.Bool("list-models", false, "List available models and exit")
 	debugFlag := flag.Bool("debug", false, "Enable debug logging")
+	conciseFlag := flag.Bool("concise", false, "Start in concise mode (brief responses)")
+	conciseShort := flag.Bool("c", false, "Start in concise mode (short form)")
 	
 	flag.Parse()
 
@@ -58,7 +60,13 @@ func main() {
 	client := NewOllamaClient(*ollamaURL, modelName)
 	client.SetDebug(*debugFlag)
 	
-	fmt.Println("Type 'exit', 'quit' to stop, '/plan' to enter plan mode, '/execute' to exit plan mode, or press Ctrl+C")
+	// Set concise mode if flag is provided
+	if *conciseFlag || *conciseShort {
+		client.SetConciseMode(true)
+	}
+	
+	fmt.Println("Type 'exit', 'quit' to stop, '/plan' to enter plan mode, '/execute' to exit plan mode")
+	fmt.Println("Commands: /stats, /clear, /compact, /concise, /verbose, /mode")
 	fmt.Println("----------------------------------------")
 
 	// Handle Ctrl+C gracefully
@@ -73,11 +81,14 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for {
+		prompt := "\n> "
 		if client.IsInPlanMode() {
-			fmt.Print("\n[PLAN] > ")
-		} else {
-			fmt.Print("\n> ")
+			prompt = "\n[PLAN] > "
 		}
+		if client.IsInConciseMode() {
+			prompt = strings.Replace(prompt, "> ", "[CONCISE] > ", 1)
+		}
+		fmt.Print(prompt)
 		
 		if !scanner.Scan() {
 			break
@@ -106,7 +117,44 @@ func main() {
 			if client.IsInPlanMode() {
 				mode = "Plan"
 			}
-			fmt.Printf("Context Stats: %d/%d tokens, %d messages | Mode: %s\n", tokens, maxTokens, messages, mode)
+			responseMode := "Verbose"
+			if client.IsInConciseMode() {
+				responseMode = "Concise"
+			}
+			fmt.Printf("Context Stats: %d/%d tokens, %d messages | Mode: %s | Response: %s\n", tokens, maxTokens, messages, mode, responseMode)
+			continue
+		}
+
+		if input == "/concise" {
+			if client.IsInConciseMode() {
+				fmt.Println("Already in concise mode!")
+				continue
+			}
+			client.SetConciseMode(true)
+			fmt.Println("📝 Switched to concise mode - responses will be brief and to-the-point")
+			continue
+		}
+
+		if input == "/verbose" {
+			if !client.IsInConciseMode() {
+				fmt.Println("Already in verbose mode!")
+				continue
+			}
+			client.SetConciseMode(false)
+			fmt.Println("📝 Switched to verbose mode - responses will include detailed explanations")
+			continue
+		}
+
+		if input == "/mode" {
+			mode := "verbose"
+			if client.IsInConciseMode() {
+				mode = "concise"
+			}
+			planMode := ""
+			if client.IsInPlanMode() {
+				planMode = " (plan mode active)"
+			}
+			fmt.Printf("Current response mode: %s%s\n", mode, planMode)
 			continue
 		}
 

@@ -13,6 +13,7 @@ type ContextManager struct {
 	planModePrompt    ChatMessage
 	retainCount       int  // Number of recent exchanges to retain
 	planMode          bool // Whether plan mode is active
+	conciseMode       bool // Whether concise mode is active
 }
 
 func NewContextManager(maxTokens int) *ContextManager {
@@ -85,6 +86,11 @@ func (cm *ContextManager) GetMessages() []ChatMessage {
 		activePrompt = cm.planModePrompt
 	} else {
 		activePrompt = cm.systemPrompt
+	}
+	
+	// Modify prompt for concise mode
+	if cm.conciseMode {
+		activePrompt = cm.addConciseModeInstructions(activePrompt)
 	}
 	
 	result := []ChatMessage{activePrompt}
@@ -330,6 +336,30 @@ func (cm *ContextManager) SetPlanMode(enabled bool) {
 
 func (cm *ContextManager) IsInPlanMode() bool {
 	return cm.planMode
+}
+
+func (cm *ContextManager) SetConciseMode(enabled bool) {
+	cm.conciseMode = enabled
+}
+
+func (cm *ContextManager) IsInConciseMode() bool {
+	return cm.conciseMode
+}
+
+func (cm *ContextManager) addConciseModeInstructions(prompt ChatMessage) ChatMessage {
+	conciseInstructions := `
+
+RESPONSE MODE: CONCISE
+- Keep all responses brief and to-the-point
+- Provide essential information only  
+- Use bullet points when appropriate
+- Avoid lengthy explanations unless specifically requested
+- Focus on direct answers and immediate next steps
+- When using tools, be efficient and purposeful`
+
+	modifiedPrompt := prompt
+	modifiedPrompt.Content = prompt.Content + conciseInstructions
+	return modifiedPrompt
 }
 
 // generateToolSchema creates a formatted JSON string representation of available tools

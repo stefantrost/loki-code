@@ -18,6 +18,7 @@ type OllamaClient struct {
 	modelName      string
 	debug          bool
 	parser         *ToolCallParser
+	conciseMode    bool
 }
 
 type ChatMessage struct {
@@ -350,6 +351,16 @@ func (c *OllamaClient) DisablePlanMode() {
 
 func (c *OllamaClient) IsInPlanMode() bool {
 	return c.planMode
+}
+
+func (c *OllamaClient) SetConciseMode(enabled bool) {
+	c.conciseMode = enabled
+	// Update context manager with concise mode setting
+	c.contextManager.SetConciseMode(enabled)
+}
+
+func (c *OllamaClient) IsInConciseMode() bool {
+	return c.conciseMode
 }
 
 func (c *OllamaClient) DetectContextWindow() (int, error) {
