@@ -19,6 +19,8 @@ type OllamaClient struct {
 	debug          bool
 	parser         *ToolCallParser
 	conciseMode    bool
+	responseActive bool
+	interruptChan  chan struct{}
 }
 
 type ChatMessage struct {
@@ -83,6 +85,7 @@ func NewOllamaClient(baseURL, modelName string) *OllamaClient {
 		contextManager: NewContextManager(4000), // Default fallback
 		modelName:      modelName,
 		parser:         NewToolCallParser(false), // Will be updated in SetDebug
+		interruptChan:  make(chan struct{}),
 	}
 	
 	// Try to detect the actual context window
@@ -149,11 +152,24 @@ func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 		return fmt.Errorf("API returned status: %s", resp.Status)
 	}
 
+	// Mark response as active for interrupt handling
+	c.SetResponseActive(true)
+	defer c.SetResponseActive(false)
+
 	var currentMessage ChatMessage
 	var hasToolCalls bool
 
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
+		// Check for interrupt signal
+		select {
+		case <-c.interruptChan:
+			fmt.Println("\n[Response interrupted by user]")
+			return fmt.Errorf("response interrupted by user")
+		default:
+			// Continue normal streaming
+		}
+		
 		line := scanner.Text()
 		if line == "" {
 			continue
@@ -233,13 +249,17 @@ func (c *OllamaClient) handleToolCalls(assistantMessage ChatMessage) error {
 			c.debugLog("Tool result length: %d characters", len(result))
 		}
 		
+		// Truncate large tool results to prevent context overflow
+		truncatedResult := c.truncateToolResult(result, toolCall.Function.Name)
+		
 		// Add tool result to context manager
 		toolMessage := ChatMessage{
 			Role:    "tool",
-			Content: result,
+			Content: truncatedResult,
 		}
 		c.contextManager.AddMessage(toolMessage)
-		c.debugLog("Added tool result to context with role 'tool'")
+		c.debugLog("Added tool result to context with role 'tool' (original: %d chars, truncated: %d chars)", 
+			len(result), len(truncatedResult))
 		
 		fmt.Printf("✓ %s completed\n", toolCall.Function.Name)
 	}
@@ -361,6 +381,85 @@ func (c *OllamaClient) SetConciseMode(enabled bool) {
 
 func (c *OllamaClient) IsInConciseMode() bool {
 	return c.conciseMode
+}
+
+func (c *OllamaClient) SetResponseActive(active bool) {
+	c.responseActive = active
+}
+
+func (c *OllamaClient) IsResponseActive() bool {
+	return c.responseActive
+}
+
+func (c *OllamaClient) InterruptResponse() {
+	select {
+	case c.interruptChan <- struct{}{}:
+		// Interrupt signal sent
+	default:
+		// Channel is full, interrupt already pending
+	}
+}
+
+func (c *OllamaClient) truncateToolResult(result, toolName string) string {
+	maxChars := 3000 // Maximum characters for tool results in context
+	
+	if len(result) <= maxChars {
+		return result
+	}
+	
+	// Different truncation strategies based on tool type
+	switch toolName {
+	case "read_file":
+		// For file contents, show beginning and end with indicator
+		prefixLength := maxChars / 2
+		suffixLength := maxChars / 4
+		
+		prefix := result[:prefixLength]
+		suffix := result[len(result)-suffixLength:]
+		
+		// Count lines for better context
+		prefixLines := strings.Count(prefix, "\n")
+		totalLines := strings.Count(result, "\n")
+		
+		return fmt.Sprintf("%s\n\n... [FILE TRUNCATED: %d lines shown, %d total lines, %d chars] ...\n\n%s",
+			prefix, prefixLines, totalLines, len(result), suffix)
+			
+	case "list_files", "find_files":
+		// For file lists, truncate with count
+		lines := strings.Split(result, "\n")
+		if len(lines) > 100 {
+			truncated := strings.Join(lines[:100], "\n")
+			return fmt.Sprintf("%s\n\n... [LIST TRUNCATED: showing 100 of %d items] ...", 
+				truncated, len(lines))
+		}
+		return result
+		
+	case "grep_content":
+		// For grep results, show first results with count
+		lines := strings.Split(result, "\n")
+		if len(lines) > 50 {
+			truncated := strings.Join(lines[:50], "\n")
+			return fmt.Sprintf("%s\n\n... [SEARCH RESULTS TRUNCATED: showing 50 of %d matches] ...", 
+				truncated, len(lines))
+		}
+		return result
+		
+	default:
+		// Generic truncation for other tools
+		return result[:maxChars] + "\n\n... [OUTPUT TRUNCATED] ..."
+	}
+}
+
+func (c *OllamaClient) GetActiveTask() *UserTask {
+	return c.contextManager.GetActiveTask()
+}
+
+func (c *OllamaClient) SetActiveTask(goal string) {
+	c.contextManager.SetActiveTask(goal)
+}
+
+func (c *OllamaClient) CompleteCurrentTask(summary string) {
+	c.contextManager.CompleteCurrentTask(summary)
 }
 
 func (c *OllamaClient) DetectContextWindow() (int, error) {

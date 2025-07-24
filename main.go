@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -67,6 +68,8 @@ func main() {
 	
 	fmt.Println("Type 'exit', 'quit' to stop, '/plan' to enter plan mode, '/execute' to exit plan mode")
 	fmt.Println("Commands: /stats, /clear, /compact, /concise, /verbose, /mode")
+	fmt.Println("Tasks: /task [description], /task (show current), /complete")
+	fmt.Println("Press Ctrl+C during response to interrupt (or at prompt to exit)")
 	fmt.Println("----------------------------------------")
 
 	// Handle Ctrl+C gracefully
@@ -74,8 +77,13 @@ func main() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
-		fmt.Println("\nGoodbye!")
-		os.Exit(0)
+		if client.IsResponseActive() {
+			fmt.Println("\n^C [Response interrupted]")
+			client.InterruptResponse()
+		} else {
+			fmt.Println("\nGoodbye!")
+			os.Exit(0)
+		}
 	}()
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -121,7 +129,16 @@ func main() {
 			if client.IsInConciseMode() {
 				responseMode = "Concise"
 			}
-			fmt.Printf("Context Stats: %d/%d tokens, %d messages | Mode: %s | Response: %s\n", tokens, maxTokens, messages, mode, responseMode)
+			
+			activeTask := client.GetActiveTask()
+			taskInfo := "None"
+			if activeTask != nil {
+				elapsed := time.Since(activeTask.CreatedAt)
+				taskInfo = fmt.Sprintf("Active (%s)", elapsed.Truncate(time.Second))
+			}
+			
+			fmt.Printf("Context Stats: %d/%d tokens, %d messages | Mode: %s | Response: %s | Task: %s\n", 
+				tokens, maxTokens, messages, mode, responseMode, taskInfo)
 			continue
 		}
 
@@ -155,6 +172,38 @@ func main() {
 				planMode = " (plan mode active)"
 			}
 			fmt.Printf("Current response mode: %s%s\n", mode, planMode)
+			continue
+		}
+
+		if input == "/task" {
+			activeTask := client.GetActiveTask()
+			if activeTask != nil {
+				fmt.Printf("🎯 Current task: %s\n", activeTask.Goal)
+				fmt.Printf("   Created: %s | Status: %s\n", 
+					activeTask.CreatedAt.Format("15:04:05"), activeTask.Status)
+			} else {
+				fmt.Println("No active task")
+			}
+			continue
+		}
+
+		if input == "/complete" {
+			activeTask := client.GetActiveTask()
+			if activeTask != nil {
+				client.CompleteCurrentTask("Manually marked as complete")
+			} else {
+				fmt.Println("No active task to complete")
+			}
+			continue
+		}
+
+		if strings.HasPrefix(input, "/task ") {
+			newTask := strings.TrimPrefix(input, "/task ")
+			if strings.TrimSpace(newTask) != "" {
+				client.SetActiveTask(newTask)
+			} else {
+				fmt.Println("Please specify a task: /task <description>")
+			}
 			continue
 		}
 

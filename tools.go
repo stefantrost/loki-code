@@ -53,7 +53,7 @@ func GetAvailableTools() []Tool {
 			Type: "function",
 			Function: Function{
 				Name:        "create_file",
-				Description: "Create a new file with specified content",
+				Description: "Create a new file with content. Use after analyzing project structure and planning the implementation.",
 				Parameters: map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -91,7 +91,7 @@ func GetAvailableTools() []Tool {
 			Type: "function",
 			Function: Function{
 				Name:        "update_file",
-				Description: "Update an existing file with new content",
+				Description: "Update existing file content. Always read the file first to understand current implementation before making changes.",
 				Parameters: map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -249,6 +249,43 @@ func GetAvailableTools() []Tool {
 				},
 			},
 		},
+		{
+			Type: "function",
+			Function: Function{
+				Name:        "http_request",
+				Description: "Make HTTP requests using curl. Execute HTTP operations to interact with APIs and web services.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"url": map[string]interface{}{
+							"type":        "string",
+							"description": "Target URL (must be http:// or https://)",
+						},
+						"method": map[string]interface{}{
+							"type":        "string",
+							"description": "HTTP method: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS (default: GET)",
+						},
+						"headers": map[string]interface{}{
+							"type":        "object",
+							"description": "Custom headers as key-value pairs (e.g., {\"Content-Type\": \"application/json\"})",
+						},
+						"data": map[string]interface{}{
+							"type":        "string",
+							"description": "Request body data for POST/PUT requests",
+						},
+						"timeout": map[string]interface{}{
+							"type":        "number",
+							"description": "Request timeout in seconds (max: 30, default: 10)",
+						},
+						"follow_redirects": map[string]interface{}{
+							"type":        "boolean",
+							"description": "Follow HTTP redirects (default: true)",
+						},
+					},
+					"required": []string{"url"},
+				},
+			},
+		},
 	}
 	
 	// Add static analyzer tool if available
@@ -332,6 +369,8 @@ func ExecuteToolWithPlanMode(toolCall ToolCall, planMode bool) (string, error) {
 		return executeTreeView(toolCall.Function.Arguments)
 	case "analyze_code":
 		return executeAnalyzeCode(toolCall.Function.Arguments)
+	case "http_request":
+		return executeCurl(toolCall.Function.Arguments)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", toolCall.Function.Name)
 	}
@@ -346,6 +385,7 @@ func isToolAllowedInPlanMode(toolName string) bool {
 		"get_pwd":      true,
 		"tree_view":    true,
 		"analyze_code": true, // Static analysis is read-only and safe in plan mode
+		"http_request": true, // HTTP requests (GET) are allowed for research/API exploration
 		// exec_command is NOT allowed in plan mode for security
 	}
 	return allowedTools[toolName]
@@ -1230,5 +1270,193 @@ func validatePath(path string) error {
 	}
 
 	return nil
+}
+
+func executeCurl(args map[string]interface{}) (string, error) {
+	// Parse URL (required)
+	url, ok := args["url"].(string)
+	if !ok {
+		return "", fmt.Errorf("url argument is required and must be a string")
+	}
+
+	// Validate URL
+	if err := validateURL(url); err != nil {
+		return "", err
+	}
+
+	// Parse method (optional, default: GET)
+	method := "GET"
+	if methodArg, hasMethod := args["method"].(string); hasMethod {
+		method = strings.ToUpper(methodArg)
+		if !isValidHTTPMethod(method) {
+			return "", fmt.Errorf("invalid HTTP method: %s", methodArg)
+		}
+	}
+
+	// Parse timeout (optional, default: 10s, max: 30s)
+	timeout := 10
+	if timeoutArg, hasTimeout := args["timeout"].(float64); hasTimeout {
+		if timeoutArg > 30 {
+			return "", fmt.Errorf("timeout cannot exceed 30 seconds")
+		}
+		if timeoutArg < 1 {
+			return "", fmt.Errorf("timeout must be at least 1 second")
+		}
+		timeout = int(timeoutArg)
+	}
+
+	// Parse follow_redirects (optional, default: true)
+	followRedirects := true
+	if followArg, hasFollow := args["follow_redirects"].(bool); hasFollow {
+		followRedirects = followArg
+	}
+
+	// Build curl command
+	curlArgs := []string{
+		"--silent",              // Suppress progress meter
+		"--show-error",          // Show errors
+		"--max-time", fmt.Sprintf("%d", timeout), // Set timeout
+		"--request", method,     // Set HTTP method
+	}
+
+	// Add redirect handling
+	if followRedirects {
+		curlArgs = append(curlArgs, "--location")
+	}
+
+	// Parse headers (optional)
+	if headersArg, hasHeaders := args["headers"]; hasHeaders {
+		if headers, ok := headersArg.(map[string]interface{}); ok {
+			for key, value := range headers {
+				headerStr := fmt.Sprintf("%s: %v", key, value)
+				if err := validateHeader(headerStr); err != nil {
+					return "", fmt.Errorf("invalid header %s: %v", key, err)
+				}
+				curlArgs = append(curlArgs, "--header", headerStr)
+			}
+		}
+	}
+
+	// Parse data (optional)
+	if dataArg, hasData := args["data"].(string); hasData && dataArg != "" {
+		if method == "GET" || method == "HEAD" {
+			return "", fmt.Errorf("cannot send data with %s method", method)
+		}
+		curlArgs = append(curlArgs, "--data", dataArg)
+	}
+
+	// Add URL as final argument
+	curlArgs = append(curlArgs, url)
+
+	// Execute curl command with timeout
+	cmd := exec.Command("curl", curlArgs...)
+	cmd.Dir = "."
+	
+	done := make(chan error, 1)
+	var output []byte
+	var err error
+	
+	go func() {
+		output, err = cmd.CombinedOutput()
+		done <- err
+	}()
+	
+	select {
+	case cmdErr := <-done:
+		outputStr := string(output)
+		
+		if cmdErr != nil {
+			return "", fmt.Errorf("curl command failed: %v\nOutput: %s", cmdErr, outputStr)
+		}
+		
+		// Limit output size to prevent memory issues
+		if len(outputStr) > 10000 {
+			outputStr = outputStr[:10000] + "\n... (output truncated at 10,000 characters)"
+		}
+		
+		return formatHTTPResponse(method, url, outputStr), nil
+		
+	case <-time.After(time.Duration(timeout+5) * time.Second):
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		return "", fmt.Errorf("HTTP request timed out after %d seconds", timeout)
+	}
+}
+
+func validateURL(url string) error {
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return fmt.Errorf("URL must start with http:// or https://")
+	}
+	
+	// Basic URL parsing to extract hostname
+	if strings.Contains(url, "://") {
+		parts := strings.SplitN(url, "://", 2)
+		if len(parts) > 1 {
+			hostPart := parts[1]
+			if strings.Contains(hostPart, "/") {
+				hostPart = strings.SplitN(hostPart, "/", 2)[0]
+			}
+			if strings.Contains(hostPart, ":") {
+				hostPart = strings.SplitN(hostPart, ":", 2)[0]
+			}
+			
+			// Prevent localhost and internal network access
+			prohibitedHosts := []string{
+				"localhost", "127.0.0.1", "::1",
+				"0.0.0.0", "10.", "172.16.", "172.17.", "172.18.", "172.19.",
+				"172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+				"172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
+				"192.168.",
+			}
+			
+			hostLower := strings.ToLower(hostPart)
+			for _, prohibited := range prohibitedHosts {
+				if hostLower == prohibited || strings.HasPrefix(hostLower, prohibited) {
+					return fmt.Errorf("access to internal/localhost addresses is not allowed")
+				}
+			}
+		}
+	}
+	
+	return nil
+}
+
+func isValidHTTPMethod(method string) bool {
+	validMethods := map[string]bool{
+		"GET": true, "POST": true, "PUT": true, "DELETE": true,
+		"PATCH": true, "HEAD": true, "OPTIONS": true,
+	}
+	return validMethods[method]
+}
+
+func validateHeader(header string) error {
+	// Basic header validation - ensure it contains a colon
+	if !strings.Contains(header, ":") {
+		return fmt.Errorf("header must be in 'Key: Value' format")
+	}
+	
+	// Prevent header injection
+	if strings.Contains(header, "\n") || strings.Contains(header, "\r") {
+		return fmt.Errorf("headers cannot contain newline characters")
+	}
+	
+	return nil
+}
+
+func formatHTTPResponse(method, url, response string) string {
+	var result strings.Builder
+	
+	result.WriteString(fmt.Sprintf("🌐 HTTP %s Request\n", method))
+	result.WriteString(fmt.Sprintf("URL: %s\n", url))
+	result.WriteString(strings.Repeat("=", 50) + "\n\n")
+	
+	if strings.TrimSpace(response) == "" {
+		result.WriteString("(Empty response)\n")
+	} else {
+		result.WriteString(response)
+	}
+	
+	return result.String()
 }
 
