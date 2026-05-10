@@ -4,17 +4,27 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
-	
+
 	"loki-code/clients"
 )
 
+func setupLogger(debug bool) {
+	level := slog.LevelInfo
+	if debug {
+		level = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: level,
+	})))
+}
+
 func main() {
-	// Command line flags
 	modelFlag := flag.String("model", "", "Model to use (default: qwen3:32b)")
 	modelShort := flag.String("m", "", "Model to use (short form)")
 	baseURL := flag.String("url", "", "API base URL (default: http://localhost:11434 for Ollama)")
@@ -26,69 +36,65 @@ func main() {
 	conciseFlag := flag.Bool("concise", false, "Start in concise mode (brief responses)")
 	conciseShort := flag.Bool("c", false, "Start in concise mode (short form)")
 	createConfig := flag.Bool("create-config", false, "Create example configuration file")
-	
+
 	flag.Parse()
 
+	setupLogger(*debugFlag)
+
 	fmt.Println("Loki Code - AI Coding Agent")
-	
-	// Handle --create-config flag
+
 	if *createConfig {
 		configPath := "llm.env"
 		if *configFile != "" {
 			configPath = *configFile
 		}
-		
+
 		if err := CreateExampleConfig(configPath); err != nil {
-			fmt.Printf("Error creating config file: %v\n", err)
+			slog.Error("Error creating config file", "error", err)
 			os.Exit(1)
 		}
-		
+
 		fmt.Printf("✓ Created example configuration file: %s\n", configPath)
 		fmt.Println("Edit the file with your API settings and run loki-code again.")
 		os.Exit(0)
 	}
-	
-	// Load configuration
+
 	config, err := LoadConfig(*configFile)
 	if err != nil {
-		fmt.Printf("Error loading configuration: %v\n", err)
+		slog.Error("Error loading configuration", "error", err)
 		fmt.Println("Run 'loki-code --create-config' to create an example configuration file.")
 		os.Exit(1)
 	}
-	
-	// Override config with command line flags (highest priority)
+
 	if *modelFlag != "" {
 		config.ModelName = *modelFlag
 	} else if *modelShort != "" {
 		config.ModelName = *modelShort
 	}
-	
+
 	if *baseURL != "" {
 		config.BaseURL = *baseURL
 	}
-	
+
 	if *apiType != "" {
 		config.APIType = *apiType
 	}
-	
+
 	if *bearerToken != "" {
 		config.BearerToken = *bearerToken
 	}
-	
+
 	if *debugFlag {
 		config.Debug = true
 	}
-	
-	// Validate and fix configuration
+
 	if err := ValidateAndFixConfig(&config); err != nil {
-		fmt.Printf("Configuration error: %v\n", err)
+		slog.Error("Configuration error", "error", err)
 		os.Exit(1)
 	}
-	
-	// Print configuration
+
 	PrintConfig(config)
-	
-	// Handle --list-models flag
+
 	if *listModels {
 		fmt.Println("Available models:")
 		if strings.ToLower(config.APIType) == "ollama" {
@@ -97,7 +103,7 @@ func main() {
 			cmd.Stderr = os.Stderr
 			err := cmd.Run()
 			if err != nil {
-				fmt.Printf("Error running ollama list: %v\n", err)
+				slog.Error("Error running ollama list", "error", err)
 				fmt.Println("Make sure Ollama is installed and running")
 				os.Exit(1)
 			}
@@ -107,28 +113,40 @@ func main() {
 		}
 		os.Exit(0)
 	}
-	
+
 	fmt.Printf("Connecting to %s API (%s)...\n", config.APIType, config.ModelName)
 
-	// Create client using factory
-	client, err := clients.CreateClient(config)
+	// Create context manager with tool provider callback
+	ctxMgr := NewContextManager(4000, GetAvailableTools)
+
+	// Create client with callbacks
+	client, err := clients.CreateClient(config, ctxMgr, ExecuteToolWithPlanMode, GetAvailableTools)
 	if err != nil {
-		fmt.Printf("Error creating client: %v\n", err)
+		slog.Error("Error creating client", "error", err)
 		os.Exit(1)
 	}
-	
-	// Set concise mode if flag is provided
+
+	// Detect and set context window
+	if contextWindow, err := client.DetectContextWindow(); err == nil {
+		optimalLimit := int(float64(contextWindow) * 0.75)
+		ctxMgr.SetMaxTokens(optimalLimit)
+		fmt.Printf("✓ Detected context window: %d tokens\n", contextWindow)
+		fmt.Printf("✓ Set context limit: %d tokens (75%% utilization)\n", optimalLimit)
+	} else {
+		fmt.Printf("⚠️ Could not detect context window: %v\n", err)
+		fmt.Printf("✓ Using default context limit: 4,000 tokens\n")
+	}
+
 	if *conciseFlag || *conciseShort {
 		client.EnableConciseMode()
 	}
-	
+
 	fmt.Println("Type 'exit', 'quit' to stop, '/plan' to enter plan mode, '/execute' to exit plan mode")
 	fmt.Println("Commands: /stats, /clear, /compact, /concise, /verbose, /mode")
 	fmt.Println("Tasks: /task [description], /task (show current), /complete")
 	fmt.Println("Press Ctrl+C during response to interrupt (or at prompt to exit)")
 	fmt.Println("----------------------------------------")
 
-	// Handle Ctrl+C gracefully
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -153,13 +171,13 @@ func main() {
 			prompt = strings.Replace(prompt, "> ", "[CONCISE] > ", 1)
 		}
 		fmt.Print(prompt)
-		
+
 		if !scanner.Scan() {
 			break
 		}
 
 		input := strings.TrimSpace(scanner.Text())
-		
+
 		if input == "" {
 			continue
 		}
@@ -185,14 +203,14 @@ func main() {
 			if client.IsInConciseMode() {
 				responseMode = "Concise"
 			}
-			
+
 			activeTask := client.GetActiveTask()
 			taskInfo := "None"
 			if activeTask != "" {
 				taskInfo = "Active"
 			}
-			
-			fmt.Printf("Context Stats: %d/%d tokens, %d messages | Mode: %s | Response: %s | Task: %s\n", 
+
+			fmt.Printf("Context Stats: %d/%d tokens, %d messages | Mode: %s | Response: %s | Task: %s\n",
 				tokens, maxTokens, messages, mode, responseMode, taskInfo)
 			continue
 		}
@@ -268,7 +286,7 @@ func main() {
 			}
 			fmt.Println("Compacting conversation context...")
 			if err := client.CompactContext(); err != nil {
-				fmt.Printf("Compacting failed: %v\n", err)
+				slog.Error("Compacting failed", "error", err)
 			}
 			continue
 		}
@@ -298,11 +316,11 @@ func main() {
 
 		fmt.Print("Assistant: ")
 		if err := client.StreamChat(input); err != nil {
-			fmt.Printf("Error: %v\n", err)
+			slog.Error("StreamChat error", "error", err)
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Printf("Error reading input: %v\n", err)
+		slog.Error("Error reading input", "error", err)
 	}
 }

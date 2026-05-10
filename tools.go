@@ -8,344 +8,256 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"loki-code/clients"
 )
 
-type Tool struct {
-	Type     string   `json:"type"`
-	Function Function `json:"function"`
-}
-
-type Function struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Parameters  map[string]interface{} `json:"parameters"`
-}
-
-type ToolCall struct {
-	Function ToolFunction `json:"function"`
-}
-
-type ToolFunction struct {
-	Name      string                 `json:"name"`
-	Arguments map[string]interface{} `json:"arguments"`
-}
-
-// Project detection structures
-type ProjectInfo struct {
-	Language    string
-	HasConfig   bool
-	ConfigFiles []string
-	Analyzers   []AnalyzerInfo
-}
-
-type AnalyzerInfo struct {
-	Name       string
-	Command    string
-	Args       []string
-	Available  bool
-	ConfigFile string
-}
-
-func GetAvailableTools() []Tool {
-	// Base tools that are always available
-	baseTools := []Tool{
+func GetAvailableTools() []clients.Tool {
+	baseTools := []clients.Tool{
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "create_file",
 				Description: "Create a new file with content. Use after analyzing project structure and planning the implementation.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"path": map[string]interface{}{
-							"type":        "string",
-							"description": "File path to create",
-						},
-						"content": map[string]interface{}{
-							"type":        "string",
-							"description": "Content to write to the file",
-						},
+				Arguments: map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "File path to create",
 					},
-					"required": []string{"path", "content"},
+					"content": map[string]interface{}{
+						"type":        "string",
+						"description": "Content to write to the file",
+					},
 				},
 			},
 		},
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "read_file",
 				Description: "Read the contents of a file",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"path": map[string]interface{}{
-							"type":        "string",
-							"description": "File path to read",
-						},
+				Arguments: map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "File path to read",
 					},
-					"required": []string{"path"},
 				},
 			},
 		},
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "update_file",
 				Description: "Update existing file content. Always read the file first to understand current implementation before making changes.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"path": map[string]interface{}{
-							"type":        "string",
-							"description": "File path to update",
-						},
-						"content": map[string]interface{}{
-							"type":        "string",
-							"description": "New content for the file",
-						},
+				Arguments: map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "File path to update",
 					},
-					"required": []string{"path", "content"},
+					"content": map[string]interface{}{
+						"type":        "string",
+						"description": "New content for the file",
+					},
 				},
 			},
 		},
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "delete_file",
 				Description: "Delete a file",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"path": map[string]interface{}{
-							"type":        "string",
-							"description": "File path to delete",
-						},
+				Arguments: map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "File path to delete",
 					},
-					"required": []string{"path"},
 				},
 			},
 		},
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "list_files",
 				Description: "List files in a directory",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"path": map[string]interface{}{
-							"type":        "string",
-							"description": "Directory path to list (default: current directory)",
-						},
+				Arguments: map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Directory path to list (default: current directory)",
 					},
-					"required": []string{},
 				},
 			},
 		},
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "exec_command",
 				Description: "Execute shell commands safely (whitelist of allowed commands)",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"command": map[string]interface{}{
-							"type":        "string",
-							"description": "Command to execute (from whitelist: find, grep, pwd, tree, wc, sort, uniq, whoami, date, which)",
-						},
-						"args": map[string]interface{}{
-							"type":        "array",
-							"description": "Command arguments as array of strings",
-							"items": map[string]interface{}{
-								"type": "string",
-							},
+				Arguments: map[string]interface{}{
+					"command": map[string]interface{}{
+						"type":        "string",
+						"description": "Command to execute (from whitelist: find, grep, pwd, tree, wc, sort, uniq, whoami, date, which)",
+					},
+					"args": map[string]interface{}{
+						"type": "array",
+						"description": "Command arguments as array of strings",
+						"items": map[string]interface{}{
+							"type": "string",
 						},
 					},
-					"required": []string{"command"},
 				},
 			},
 		},
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "find_files",
 				Description: "Find files by name pattern using find command",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"pattern": map[string]interface{}{
-							"type":        "string",
-							"description": "File name pattern to search for (supports wildcards like *.go)",
-						},
-						"path": map[string]interface{}{
-							"type":        "string",
-							"description": "Directory to search in (default: current directory)",
-						},
-						"type": map[string]interface{}{
-							"type":        "string",
-							"description": "File type filter: 'f' for files only, 'd' for directories only",
-						},
+				Arguments: map[string]interface{}{
+					"pattern": map[string]interface{}{
+						"type":        "string",
+						"description": "File name pattern to search for (supports wildcards like *.go)",
 					},
-					"required": []string{"pattern"},
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Directory to search in (default: current directory)",
+					},
+					"type": map[string]interface{}{
+						"type":        "string",
+						"description": "File type filter: 'f' for files only, 'd' for directories only",
+					},
 				},
 			},
 		},
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "grep_content",
 				Description: "Search for patterns in file contents using grep",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"pattern": map[string]interface{}{
-							"type":        "string",
-							"description": "Pattern to search for in files",
-						},
-						"files": map[string]interface{}{
-							"type":        "string",
-							"description": "File path or pattern (e.g., '*.go', 'src/*.py')",
-						},
-						"options": map[string]interface{}{
-							"type":        "string",
-							"description": "Grep options: -i (ignore case), -n (line numbers), -r (recursive), -l (files only)",
-						},
+				Arguments: map[string]interface{}{
+					"pattern": map[string]interface{}{
+						"type":        "string",
+						"description": "Pattern to search for in files",
 					},
-					"required": []string{"pattern", "files"},
+					"files": map[string]interface{}{
+						"type":        "string",
+						"description": "File path or pattern (e.g., '*.go', 'src/*.py')",
+					},
+					"options": map[string]interface{}{
+						"type":        "string",
+						"description": "Grep options: -i (ignore case), -n (line numbers), -r (recursive), -l (files only)",
+					},
 				},
 			},
 		},
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "get_pwd",
 				Description: "Get current working directory",
-				Parameters: map[string]interface{}{
-					"type":       "object",
-					"properties": map[string]interface{}{},
-					"required":   []string{},
-				},
+				Arguments: map[string]interface{}{},
 			},
 		},
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "tree_view",
 				Description: "Show directory tree structure",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"path": map[string]interface{}{
-							"type":        "string",
-							"description": "Directory path to show tree for (default: current directory)",
-						},
-						"depth": map[string]interface{}{
-							"type":        "number",
-							"description": "Maximum depth to show (default: 3)",
-						},
+				Arguments: map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Directory path to show tree for (default: current directory)",
 					},
-					"required": []string{},
+					"depth": map[string]interface{}{
+						"type":        "number",
+						"description": "Maximum depth to show (default: 3)",
+					},
 				},
 			},
 		},
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "http_request",
 				Description: "Make HTTP requests using curl. Execute HTTP operations to interact with APIs and web services.",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"url": map[string]interface{}{
-							"type":        "string",
-							"description": "Target URL (must be http:// or https://)",
-						},
-						"method": map[string]interface{}{
-							"type":        "string",
-							"description": "HTTP method: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS (default: GET)",
-						},
-						"headers": map[string]interface{}{
-							"type":        "object",
-							"description": "Custom headers as key-value pairs (e.g., {\"Content-Type\": \"application/json\"})",
-						},
-						"data": map[string]interface{}{
-							"type":        "string",
-							"description": "Request body data for POST/PUT requests",
-						},
-						"timeout": map[string]interface{}{
-							"type":        "number",
-							"description": "Request timeout in seconds (max: 30, default: 10)",
-						},
-						"follow_redirects": map[string]interface{}{
-							"type":        "boolean",
-							"description": "Follow HTTP redirects (default: true)",
-						},
+				Arguments: map[string]interface{}{
+					"url": map[string]interface{}{
+						"type":        "string",
+						"description": "Target URL (must be http:// or https://)",
 					},
-					"required": []string{"url"},
+					"method": map[string]interface{}{
+						"type":        "string",
+						"description": "HTTP method: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS (default: GET)",
+					},
+					"headers": map[string]interface{}{
+						"type":        "object",
+						"description": "Custom headers as key-value pairs (e.g., {\"Content-Type\": \"application/json\"})",
+					},
+					"data": map[string]interface{}{
+						"type":        "string",
+						"description": "Request body data for POST/PUT requests",
+					},
+					"timeout": map[string]interface{}{
+						"type":        "number",
+						"description": "Request timeout in seconds (max: 30, default: 10)",
+					},
+					"follow_redirects": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Follow HTTP redirects (default: true)",
+					},
 				},
 			},
 		},
 	}
-	
-	// Add static analyzer tool if available
+
 	projectInfo := detectProject()
 	if len(projectInfo.Analyzers) > 0 {
 		analyzerTool := createAnalyzerTool(projectInfo)
 		baseTools = append(baseTools, analyzerTool)
 	}
-	
+
 	return baseTools
 }
 
-func createAnalyzerTool(projectInfo ProjectInfo) Tool {
+func createAnalyzerTool(projectInfo ProjectInfo) clients.Tool {
 	availableAnalyzers := getAnalyzerNames(projectInfo.Analyzers)
-	description := fmt.Sprintf("Run static analysis for %s project (available: %s)", 
-		projectInfo.Language, 
+	description := fmt.Sprintf("Run static analysis for %s project (available: %s)",
+		projectInfo.Language,
 		strings.Join(availableAnalyzers, ", "))
-	
-	return Tool{
+
+	return clients.Tool{
 		Type: "function",
-		Function: Function{
+		Function: clients.ToolFunc{
 			Name:        "analyze_code",
 			Description: description,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"scope": map[string]interface{}{
-						"type":        "string",
-						"description": "Analysis scope: 'file' (specific file), 'package' (current package/directory), or 'all' (entire project)",
-					},
-					"file_path": map[string]interface{}{
-						"type":        "string",
-						"description": "Specific file to analyze (required for scope='file')",
-					},
-					"analyzer": map[string]interface{}{
-						"type":        "string",
-						"description": fmt.Sprintf("Analyzer to use: %s (default: auto-select best)", strings.Join(availableAnalyzers, ", ")),
-					},
-					"fix": map[string]interface{}{
-						"type":        "boolean",
-						"description": "Auto-fix issues when supported (default: false)",
-					},
+			Arguments: map[string]interface{}{
+				"scope": map[string]interface{}{
+					"type":        "string",
+					"description": "Analysis scope: 'file' (specific file), 'package' (current package/directory), or 'all' (entire project)",
 				},
-				"required": []string{},
+				"file_path": map[string]interface{}{
+					"type":        "string",
+					"description": "Specific file to analyze (required for scope='file')",
+				},
+				"analyzer": map[string]interface{}{
+					"type":        "string",
+					"description": fmt.Sprintf("Analyzer to use: %s (default: auto-select best)", strings.Join(availableAnalyzers, ", ")),
+				},
+				"fix": map[string]interface{}{
+					"type":        "boolean",
+					"description": "Auto-fix issues when supported (default: false)",
+				},
 			},
 		},
 	}
 }
 
-func ExecuteTool(toolCall ToolCall) (string, error) {
-	return ExecuteToolWithPlanMode(toolCall, false)
-}
-
-func ExecuteToolWithPlanMode(toolCall ToolCall, planMode bool) (string, error) {
-	// Check if tool is allowed in plan mode
+// ExecuteToolWithPlanMode executes a tool call with optional plan mode restriction
+func ExecuteToolWithPlanMode(toolCall clients.ToolCall, planMode bool) (string, error) {
 	if planMode && !isToolAllowedInPlanMode(toolCall.Function.Name) {
-		return fmt.Sprintf("⚠️ Plan Mode: Cannot execute '%s'. This tool is restricted in plan mode.\n\nConsider adding this operation to your execution plan:\n- %s with the specified parameters", 
+		return fmt.Sprintf("⚠️ Plan Mode: Cannot execute '%s'. This tool is restricted in plan mode.\n\nConsider adding this operation to your execution plan:\n- %s with the specified parameters",
 			toolCall.Function.Name, toolCall.Function.Name), nil
 	}
-	
+
 	switch toolCall.Function.Name {
 	case "create_file":
 		return executeCreateFile(toolCall.Function.Arguments)
@@ -384,9 +296,8 @@ func isToolAllowedInPlanMode(toolName string) bool {
 		"grep_content": true,
 		"get_pwd":      true,
 		"tree_view":    true,
-		"analyze_code": true, // Static analysis is read-only and safe in plan mode
-		"http_request": true, // HTTP requests (GET) are allowed for research/API exploration
-		// exec_command is NOT allowed in plan mode for security
+		"analyze_code": true,
+		"http_request": true,
 	}
 	return allowedTools[toolName]
 }
@@ -455,20 +366,17 @@ func executeUpdateFile(args map[string]interface{}) (string, error) {
 		return "", fmt.Errorf("file does not exist: %s", path)
 	}
 
-	// Read current file content
 	currentContent, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("failed to read current file: %v", err)
 	}
 
 	currentContentStr := string(currentContent)
-	
-	// Check if content is actually different
+
 	if currentContentStr == newContent {
 		return fmt.Sprintf("No changes needed for %s (content is identical)", path), nil
 	}
 
-	// Show diff and get user confirmation
 	confirmed, err := showDiffAndConfirm(currentContentStr, newContent, path)
 	if err != nil {
 		return "", fmt.Errorf("failed to get user confirmation: %v", err)
@@ -478,7 +386,6 @@ func executeUpdateFile(args map[string]interface{}) (string, error) {
 		return fmt.Sprintf("File update cancelled by user: %s", path), nil
 	}
 
-	// Apply the changes
 	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
 		return "", fmt.Errorf("failed to update file: %v", err)
 	}
@@ -555,57 +462,66 @@ func findConfigFile(candidates []string) string {
 }
 
 func hasPythonFiles() bool {
-	// Check for common Python project indicators
 	pythonIndicators := []string{
-		"requirements.txt", "pyproject.toml", "setup.py", 
+		"requirements.txt", "pyproject.toml", "setup.py",
 		"setup.cfg", "Pipfile", "poetry.lock",
 	}
-	
+
 	for _, indicator := range pythonIndicators {
 		if fileExists(indicator) {
 			return true
 		}
 	}
-	
-	// Check for .py files in current directory
+
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		return false
 	}
-	
+
 	for _, entry := range entries {
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".py") {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
 // Project detection functions
+type ProjectInfo struct {
+	Language    string
+	HasConfig   bool
+	ConfigFiles []string
+	Analyzers   []AnalyzerInfo
+}
+
+type AnalyzerInfo struct {
+	Name       string
+	Command    string
+	Args       []string
+	Available  bool
+	ConfigFile string
+}
+
 func detectProject() ProjectInfo {
-	// Check Go first (most specific)
 	if fileExists("go.mod") {
 		return detectGoProject()
 	}
-	
-	// Check Node.js/TypeScript
+
 	if fileExists("package.json") {
 		return detectNodeProject()
 	}
-	
-	// Check Python (less specific, so check last)
+
 	if hasPythonFiles() {
 		return detectPythonProject()
 	}
-	
+
 	return ProjectInfo{Language: "unknown"}
 }
 
 func detectGoProject() ProjectInfo {
 	analyzers := []AnalyzerInfo{}
-	
-	// golangci-lint (preferred)
+
 	if commandExists("golangci-lint") {
 		analyzers = append(analyzers, AnalyzerInfo{
 			Name:       "golangci-lint",
@@ -615,8 +531,7 @@ func detectGoProject() ProjectInfo {
 			ConfigFile: findConfigFile([]string{".golangci.yml", ".golangci.yaml"}),
 		})
 	}
-	
-	// go vet (always available with Go installation)
+
 	if commandExists("go") {
 		analyzers = append(analyzers, AnalyzerInfo{
 			Name:      "go vet",
@@ -625,7 +540,7 @@ func detectGoProject() ProjectInfo {
 			Available: true,
 		})
 	}
-	
+
 	return ProjectInfo{
 		Language:  "go",
 		HasConfig: fileExists("go.mod"),
@@ -635,8 +550,7 @@ func detectGoProject() ProjectInfo {
 
 func detectPythonProject() ProjectInfo {
 	analyzers := []AnalyzerInfo{}
-	
-	// ruff (preferred - fast and modern)
+
 	if commandExists("ruff") {
 		analyzers = append(analyzers, AnalyzerInfo{
 			Name:       "ruff",
@@ -646,8 +560,7 @@ func detectPythonProject() ProjectInfo {
 			ConfigFile: findConfigFile([]string{"ruff.toml", "pyproject.toml"}),
 		})
 	}
-	
-	// pylint (comprehensive analysis)
+
 	if commandExists("pylint") {
 		analyzers = append(analyzers, AnalyzerInfo{
 			Name:       "pylint",
@@ -657,8 +570,7 @@ func detectPythonProject() ProjectInfo {
 			ConfigFile: findConfigFile([]string{".pylintrc", "pylint.ini"}),
 		})
 	}
-	
-	// flake8 (widely used)
+
 	if commandExists("flake8") {
 		analyzers = append(analyzers, AnalyzerInfo{
 			Name:       "flake8",
@@ -668,8 +580,7 @@ func detectPythonProject() ProjectInfo {
 			ConfigFile: findConfigFile([]string{".flake8", "setup.cfg"}),
 		})
 	}
-	
-	// python syntax check (basic fallback)
+
 	if commandExists("python3") {
 		analyzers = append(analyzers, AnalyzerInfo{
 			Name:      "python3",
@@ -685,9 +596,9 @@ func detectPythonProject() ProjectInfo {
 			Available: true,
 		})
 	}
-	
+
 	hasConfig := fileExists("pyproject.toml") || fileExists("requirements.txt") || fileExists("setup.py")
-	
+
 	return ProjectInfo{
 		Language:  "python",
 		HasConfig: hasConfig,
@@ -698,8 +609,7 @@ func detectPythonProject() ProjectInfo {
 func detectNodeProject() ProjectInfo {
 	analyzers := []AnalyzerInfo{}
 	isTypeScript := fileExists("tsconfig.json")
-	
-	// TypeScript type checking (highest priority for TS projects)
+
 	if isTypeScript && commandExists("tsc") {
 		analyzers = append(analyzers, AnalyzerInfo{
 			Name:       "tsc",
@@ -709,8 +619,7 @@ func detectNodeProject() ProjectInfo {
 			ConfigFile: "tsconfig.json",
 		})
 	}
-	
-	// ESLint (if config exists)
+
 	eslintConfig := findConfigFile([]string{
 		".eslintrc.js", ".eslintrc.json", ".eslintrc.yml",
 		".eslintrc.yaml", "eslint.config.js", ".eslintrc",
@@ -724,8 +633,7 @@ func detectNodeProject() ProjectInfo {
 			ConfigFile: eslintConfig,
 		})
 	}
-	
-	// JSHint fallback
+
 	if commandExists("jshint") {
 		analyzers = append(analyzers, AnalyzerInfo{
 			Name:      "jshint",
@@ -734,8 +642,7 @@ func detectNodeProject() ProjectInfo {
 			Available: true,
 		})
 	}
-	
-	// Basic Node.js syntax check (always try as fallback)
+
 	if commandExists("node") {
 		analyzers = append(analyzers, AnalyzerInfo{
 			Name:      "node",
@@ -744,12 +651,12 @@ func detectNodeProject() ProjectInfo {
 			Available: true,
 		})
 	}
-	
+
 	language := "javascript"
 	if isTypeScript {
 		language = "typescript"
 	}
-	
+
 	return ProjectInfo{
 		Language:  language,
 		HasConfig: fileExists("package.json"),
@@ -779,7 +686,6 @@ var allowedCommands = map[string]bool{
 	"whoami": true,
 	"date":   true,
 	"which":  true,
-	// Removed: "ls" (covered by list_files), "cat"/"head"/"tail" (covered by read_file)
 }
 
 func executeCommand(args map[string]interface{}) (string, error) {
@@ -788,13 +694,11 @@ func executeCommand(args map[string]interface{}) (string, error) {
 		return "", fmt.Errorf("command argument is required and must be a string")
 	}
 
-	// Security check: command must be in whitelist
 	if !allowedCommands[command] {
-		return "", fmt.Errorf("command '%s' is not allowed. Allowed commands: %s", 
+		return "", fmt.Errorf("command '%s' is not allowed. Allowed commands: %s",
 			command, getAvailableCommands())
 	}
 
-	// Parse arguments
 	var cmdArgs []string
 	if argsInterface, hasArgs := args["args"]; hasArgs {
 		if argsList, ok := argsInterface.([]interface{}); ok {
@@ -806,37 +710,33 @@ func executeCommand(args map[string]interface{}) (string, error) {
 		}
 	}
 
-	// Create and configure command
 	cmd := exec.Command(command, cmdArgs...)
-	cmd.Dir = "." // Run in current directory
-	
-	// Set timeout to prevent hanging
+	cmd.Dir = "."
+
 	timeout := 30 * time.Second
-	
-	// Execute with timeout
+
 	done := make(chan error, 1)
 	var output []byte
 	var err error
-	
+
 	go func() {
 		output, err = cmd.CombinedOutput()
 		done <- err
 	}()
-	
+
 	select {
-	case err := <-done:
-		if err != nil {
-			return "", fmt.Errorf("command failed: %v\nOutput: %s", err, string(output))
+	case cmdErr := <-done:
+		if cmdErr != nil {
+			return "", fmt.Errorf("command failed: %v\nOutput: %s", cmdErr, string(output))
 		}
-		
-		// Limit output size to prevent memory issues
+
 		outputStr := string(output)
 		if len(outputStr) > 10000 {
 			outputStr = outputStr[:10000] + "\n... (output truncated at 10,000 characters)"
 		}
-		
+
 		return outputStr, nil
-		
+
 	case <-time.After(timeout):
 		if cmd.Process != nil {
 			cmd.Process.Kill()
@@ -851,7 +751,6 @@ func executeFindFiles(args map[string]interface{}) (string, error) {
 		return "", fmt.Errorf("pattern argument is required and must be a string")
 	}
 
-	// Default path
 	searchPath := "."
 	if path, hasPath := args["path"].(string); hasPath {
 		if err := validatePath(path); err != nil {
@@ -860,20 +759,17 @@ func executeFindFiles(args map[string]interface{}) (string, error) {
 		searchPath = path
 	}
 
-	// Build find command
 	findArgs := []string{searchPath, "-name", pattern}
-	
-	// Add type filter if specified
+
 	if fileType, hasType := args["type"].(string); hasType {
 		if fileType == "f" || fileType == "d" {
 			findArgs = append(findArgs, "-type", fileType)
 		}
 	}
 
-	// Execute find command
 	cmd := exec.Command("find", findArgs...)
 	output, err := cmd.CombinedOutput()
-	
+
 	if err != nil {
 		return "", fmt.Errorf("find command failed: %v\nOutput: %s", err, string(output))
 	}
@@ -883,7 +779,6 @@ func executeFindFiles(args map[string]interface{}) (string, error) {
 		return fmt.Sprintf("No files found matching pattern '%s' in %s", pattern, searchPath), nil
 	}
 
-	// Limit output size
 	if len(outputStr) > 10000 {
 		outputStr = outputStr[:10000] + "\n... (output truncated at 10,000 characters)"
 	}
@@ -902,12 +797,9 @@ func executeGrepContent(args map[string]interface{}) (string, error) {
 		return "", fmt.Errorf("files argument is required and must be a string")
 	}
 
-	// Build grep command
 	grepArgs := []string{pattern}
-	
-	// Add options if specified
+
 	if options, hasOptions := args["options"].(string); hasOptions {
-		// Parse options safely
 		if strings.Contains(options, "-i") {
 			grepArgs = append([]string{"-i"}, grepArgs...)
 		}
@@ -921,15 +813,12 @@ func executeGrepContent(args map[string]interface{}) (string, error) {
 			grepArgs = append([]string{"-l"}, grepArgs...)
 		}
 	}
-	
-	// Add files pattern
+
 	grepArgs = append(grepArgs, files)
 
-	// Execute grep command
 	cmd := exec.Command("grep", grepArgs...)
 	output, err := cmd.CombinedOutput()
-	
-	// grep returns exit code 1 when no matches found, which is not an error
+
 	if err != nil && cmd.ProcessState.ExitCode() != 1 {
 		return "", fmt.Errorf("grep command failed: %v\nOutput: %s", err, string(output))
 	}
@@ -939,7 +828,6 @@ func executeGrepContent(args map[string]interface{}) (string, error) {
 		return fmt.Sprintf("No matches found for pattern '%s' in %s", pattern, files), nil
 	}
 
-	// Limit output size
 	if len(outputStr) > 10000 {
 		outputStr = outputStr[:10000] + "\n... (output truncated at 10,000 characters)"
 	}
@@ -950,7 +838,7 @@ func executeGrepContent(args map[string]interface{}) (string, error) {
 func executeGetPwd(args map[string]interface{}) (string, error) {
 	cmd := exec.Command("pwd")
 	output, err := cmd.Output()
-	
+
 	if err != nil {
 		return "", fmt.Errorf("pwd command failed: %v", err)
 	}
@@ -959,7 +847,6 @@ func executeGetPwd(args map[string]interface{}) (string, error) {
 }
 
 func executeTreeView(args map[string]interface{}) (string, error) {
-	// Default path
 	treePath := "."
 	if path, hasPath := args["path"].(string); hasPath {
 		if err := validatePath(path); err != nil {
@@ -968,7 +855,6 @@ func executeTreeView(args map[string]interface{}) (string, error) {
 		treePath = path
 	}
 
-	// Default depth
 	depth := 3
 	if depthInterface, hasDepth := args["depth"]; hasDepth {
 		if depthFloat, ok := depthInterface.(float64); ok {
@@ -980,17 +866,14 @@ func executeTreeView(args map[string]interface{}) (string, error) {
 		}
 	}
 
-	// Limit depth for safety
 	if depth > 10 {
 		depth = 10
 	}
 
-	// Try tree command first, fall back to ls if not available
 	cmd := exec.Command("tree", "-L", strconv.Itoa(depth), treePath)
 	output, err := cmd.CombinedOutput()
-	
+
 	if err != nil {
-		// Fallback to ls -la if tree is not available
 		cmd = exec.Command("ls", "-la", treePath)
 		output, err = cmd.CombinedOutput()
 		if err != nil {
@@ -1000,8 +883,7 @@ func executeTreeView(args map[string]interface{}) (string, error) {
 	}
 
 	outputStr := string(output)
-	
-	// Limit output size
+
 	if len(outputStr) > 10000 {
 		outputStr = outputStr[:10000] + "\n... (output truncated at 10,000 characters)"
 	}
@@ -1022,19 +904,17 @@ func executeAnalyzeCode(args map[string]interface{}) (string, error) {
 	if len(projectInfo.Analyzers) == 0 {
 		return fmt.Sprintf("No static analyzers detected for %s projects in current directory", projectInfo.Language), nil
 	}
-	
-	// Parse arguments
-	scope := "package" // default scope
+
+	scope := "package"
 	if s, hasScope := args["scope"].(string); hasScope {
 		scope = s
 	}
-	
+
 	var filePath string
 	if fp, hasFilePath := args["file_path"].(string); hasFilePath {
 		filePath = fp
 	}
-	
-	// Validate file path if provided
+
 	if filePath != "" {
 		if err := validatePath(filePath); err != nil {
 			return "", err
@@ -1043,31 +923,26 @@ func executeAnalyzeCode(args map[string]interface{}) (string, error) {
 			return "", fmt.Errorf("file not found: %s", filePath)
 		}
 	}
-	
-	// Select analyzer
+
 	analyzer := selectAnalyzer(args, projectInfo.Analyzers)
 	if analyzer == nil {
 		return "No suitable analyzer found", nil
 	}
-	
-	// Build command arguments
+
 	cmdArgs, err := buildAnalyzerArgs(*analyzer, scope, filePath, args)
 	if err != nil {
 		return "", err
 	}
-	
-	// Execute analyzer
+
 	result, err := runAnalyzer(*analyzer, cmdArgs)
 	if err != nil {
 		return fmt.Sprintf("Analysis failed with %s: %v\nOutput: %s", analyzer.Name, err, result), nil
 	}
-	
-	// Format results
+
 	return formatAnalysisResults(analyzer.Name, result, projectInfo.Language, scope, filePath), nil
 }
 
 func selectAnalyzer(args map[string]interface{}, analyzers []AnalyzerInfo) *AnalyzerInfo {
-	// If user specified an analyzer, try to find it
 	if analyzerName, hasAnalyzer := args["analyzer"].(string); hasAnalyzer {
 		for _, analyzer := range analyzers {
 			if analyzer.Available && analyzer.Name == analyzerName {
@@ -1075,27 +950,25 @@ func selectAnalyzer(args map[string]interface{}, analyzers []AnalyzerInfo) *Anal
 			}
 		}
 	}
-	
-	// Auto-select best available analyzer (first in list is preferred)
+
 	for _, analyzer := range analyzers {
 		if analyzer.Available {
 			return &analyzer
 		}
 	}
-	
+
 	return nil
 }
 
 func buildAnalyzerArgs(analyzer AnalyzerInfo, scope, filePath string, args map[string]interface{}) ([]string, error) {
 	cmdArgs := make([]string, len(analyzer.Args))
 	copy(cmdArgs, analyzer.Args)
-	
-	// Handle auto-fix flag
+
 	shouldFix := false
 	if fix, hasFix := args["fix"].(bool); hasFix {
 		shouldFix = fix
 	}
-	
+
 	switch analyzer.Name {
 	case "golangci-lint":
 		if shouldFix {
@@ -1106,12 +979,12 @@ func buildAnalyzerArgs(analyzer AnalyzerInfo, scope, filePath string, args map[s
 		} else if scope == "package" {
 			cmdArgs = append(cmdArgs, "./...")
 		}
-		
+
 	case "go vet":
 		if scope == "file" && filePath != "" {
 			cmdArgs = []string{"vet", filePath}
 		}
-		
+
 	case "ruff":
 		if shouldFix {
 			cmdArgs = []string{"check", "--fix"}
@@ -1121,24 +994,24 @@ func buildAnalyzerArgs(analyzer AnalyzerInfo, scope, filePath string, args map[s
 		} else {
 			cmdArgs = append(cmdArgs, ".")
 		}
-		
+
 	case "pylint":
 		if scope == "file" && filePath != "" {
 			cmdArgs = append(cmdArgs, filePath)
 		} else {
 			cmdArgs = append(cmdArgs, ".")
 		}
-		
+
 	case "flake8":
 		if scope == "file" && filePath != "" {
 			cmdArgs = append(cmdArgs, filePath)
 		} else {
 			cmdArgs = append(cmdArgs, ".")
 		}
-		
+
 	case "tsc":
 		// tsc --noEmit doesn't need file-specific args
-		
+
 	case "eslint":
 		if shouldFix {
 			cmdArgs = append(cmdArgs, "--fix")
@@ -1148,21 +1021,21 @@ func buildAnalyzerArgs(analyzer AnalyzerInfo, scope, filePath string, args map[s
 		} else {
 			cmdArgs = append(cmdArgs, ".")
 		}
-		
+
 	case "jshint":
 		if scope == "file" && filePath != "" {
 			cmdArgs = append(cmdArgs, filePath)
 		} else {
 			cmdArgs = append(cmdArgs, ".")
 		}
-		
+
 	case "node":
 		if scope == "file" && filePath != "" {
 			cmdArgs = append(cmdArgs, filePath)
 		} else {
 			return nil, fmt.Errorf("node --check requires a specific file")
 		}
-		
+
 	case "python3", "python":
 		if scope == "file" && filePath != "" {
 			cmdArgs = append(cmdArgs, filePath)
@@ -1170,47 +1043,41 @@ func buildAnalyzerArgs(analyzer AnalyzerInfo, scope, filePath string, args map[s
 			return nil, fmt.Errorf("python syntax check requires a specific file")
 		}
 	}
-	
+
 	return cmdArgs, nil
 }
 
 func runAnalyzer(analyzer AnalyzerInfo, cmdArgs []string) (string, error) {
 	cmd := exec.Command(analyzer.Command, cmdArgs...)
-	cmd.Dir = "." // Run in current directory
-	
-	// Set timeout to prevent hanging
+	cmd.Dir = "."
+
 	timeout := 60 * time.Second
-	
-	// Execute with timeout
+
 	done := make(chan error, 1)
 	var output []byte
 	var err error
-	
+
 	go func() {
 		output, err = cmd.CombinedOutput()
 		done <- err
 	}()
-	
+
 	select {
-	case err := <-done:
+	case cmdErr := <-done:
 		outputStr := string(output)
-		
-		// Many analyzers return non-zero exit codes for issues found
-		// This is not necessarily an error
-		if err != nil {
-			// Check if it's a real error (command not found, etc.) vs issues found
+
+		if cmdErr != nil {
 			if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() > 2 {
-				return outputStr, err
+				return outputStr, cmdErr
 			}
 		}
-		
-		// Limit output size
+
 		if len(outputStr) > 15000 {
 			outputStr = outputStr[:15000] + "\n... (output truncated at 15,000 characters)"
 		}
-		
+
 		return outputStr, nil
-		
+
 	case <-time.After(timeout):
 		if cmd.Process != nil {
 			cmd.Process.Kill()
@@ -1221,7 +1088,7 @@ func runAnalyzer(analyzer AnalyzerInfo, cmdArgs []string) (string, error) {
 
 func formatAnalysisResults(analyzerName, output, language, scope, filePath string) string {
 	var result strings.Builder
-	
+
 	result.WriteString(fmt.Sprintf("🔍 Static Analysis Results (%s)\n", analyzerName))
 	result.WriteString(fmt.Sprintf("Language: %s | Scope: %s", language, scope))
 	if filePath != "" {
@@ -1229,13 +1096,12 @@ func formatAnalysisResults(analyzerName, output, language, scope, filePath strin
 	}
 	result.WriteString("\n")
 	result.WriteString(strings.Repeat("=", 50) + "\n\n")
-	
+
 	if strings.TrimSpace(output) == "" {
 		result.WriteString("✅ No issues found!\n")
 	} else {
 		result.WriteString(output)
-		
-		// Add helpful context based on analyzer
+
 		result.WriteString("\n" + strings.Repeat("-", 30) + "\n")
 		switch analyzerName {
 		case "golangci-lint":
@@ -1248,13 +1114,13 @@ func formatAnalysisResults(analyzerName, output, language, scope, filePath strin
 			result.WriteString("💡 TypeScript type checking complete. Fix type errors to improve code safety.")
 		}
 	}
-	
+
 	return result.String()
 }
 
 func validatePath(path string) error {
 	cleanPath := filepath.Clean(path)
-	
+
 	if strings.Contains(cleanPath, "..") {
 		return fmt.Errorf("path traversal not allowed: %s", path)
 	}
@@ -1273,18 +1139,15 @@ func validatePath(path string) error {
 }
 
 func executeCurl(args map[string]interface{}) (string, error) {
-	// Parse URL (required)
 	url, ok := args["url"].(string)
 	if !ok {
 		return "", fmt.Errorf("url argument is required and must be a string")
 	}
 
-	// Validate URL
 	if err := validateURL(url); err != nil {
 		return "", err
 	}
 
-	// Parse method (optional, default: GET)
 	method := "GET"
 	if methodArg, hasMethod := args["method"].(string); hasMethod {
 		method = strings.ToUpper(methodArg)
@@ -1293,7 +1156,6 @@ func executeCurl(args map[string]interface{}) (string, error) {
 		}
 	}
 
-	// Parse timeout (optional, default: 10s, max: 30s)
 	timeout := 10
 	if timeoutArg, hasTimeout := args["timeout"].(float64); hasTimeout {
 		if timeoutArg > 30 {
@@ -1305,26 +1167,22 @@ func executeCurl(args map[string]interface{}) (string, error) {
 		timeout = int(timeoutArg)
 	}
 
-	// Parse follow_redirects (optional, default: true)
 	followRedirects := true
 	if followArg, hasFollow := args["follow_redirects"].(bool); hasFollow {
 		followRedirects = followArg
 	}
 
-	// Build curl command
 	curlArgs := []string{
-		"--silent",              // Suppress progress meter
-		"--show-error",          // Show errors
-		"--max-time", fmt.Sprintf("%d", timeout), // Set timeout
-		"--request", method,     // Set HTTP method
+		"--silent",
+		"--show-error",
+		"--max-time", fmt.Sprintf("%d", timeout),
+		"--request", method,
 	}
 
-	// Add redirect handling
 	if followRedirects {
 		curlArgs = append(curlArgs, "--location")
 	}
 
-	// Parse headers (optional)
 	if headersArg, hasHeaders := args["headers"]; hasHeaders {
 		if headers, ok := headersArg.(map[string]interface{}); ok {
 			for key, value := range headers {
@@ -1337,7 +1195,6 @@ func executeCurl(args map[string]interface{}) (string, error) {
 		}
 	}
 
-	// Parse data (optional)
 	if dataArg, hasData := args["data"].(string); hasData && dataArg != "" {
 		if method == "GET" || method == "HEAD" {
 			return "", fmt.Errorf("cannot send data with %s method", method)
@@ -1345,37 +1202,34 @@ func executeCurl(args map[string]interface{}) (string, error) {
 		curlArgs = append(curlArgs, "--data", dataArg)
 	}
 
-	// Add URL as final argument
 	curlArgs = append(curlArgs, url)
 
-	// Execute curl command with timeout
 	cmd := exec.Command("curl", curlArgs...)
 	cmd.Dir = "."
-	
+
 	done := make(chan error, 1)
 	var output []byte
 	var err error
-	
+
 	go func() {
 		output, err = cmd.CombinedOutput()
 		done <- err
 	}()
-	
+
 	select {
 	case cmdErr := <-done:
 		outputStr := string(output)
-		
+
 		if cmdErr != nil {
 			return "", fmt.Errorf("curl command failed: %v\nOutput: %s", cmdErr, outputStr)
 		}
-		
-		// Limit output size to prevent memory issues
+
 		if len(outputStr) > 10000 {
 			outputStr = outputStr[:10000] + "\n... (output truncated at 10,000 characters)"
 		}
-		
+
 		return formatHTTPResponse(method, url, outputStr), nil
-		
+
 	case <-time.After(time.Duration(timeout+5) * time.Second):
 		if cmd.Process != nil {
 			cmd.Process.Kill()
@@ -1388,8 +1242,7 @@ func validateURL(url string) error {
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		return fmt.Errorf("URL must start with http:// or https://")
 	}
-	
-	// Basic URL parsing to extract hostname
+
 	if strings.Contains(url, "://") {
 		parts := strings.SplitN(url, "://", 2)
 		if len(parts) > 1 {
@@ -1400,8 +1253,7 @@ func validateURL(url string) error {
 			if strings.Contains(hostPart, ":") {
 				hostPart = strings.SplitN(hostPart, ":", 2)[0]
 			}
-			
-			// Prevent localhost and internal network access
+
 			prohibitedHosts := []string{
 				"localhost", "127.0.0.1", "::1",
 				"0.0.0.0", "10.", "172.16.", "172.17.", "172.18.", "172.19.",
@@ -1409,7 +1261,7 @@ func validateURL(url string) error {
 				"172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
 				"192.168.",
 			}
-			
+
 			hostLower := strings.ToLower(hostPart)
 			for _, prohibited := range prohibitedHosts {
 				if hostLower == prohibited || strings.HasPrefix(hostLower, prohibited) {
@@ -1418,7 +1270,7 @@ func validateURL(url string) error {
 			}
 		}
 	}
-	
+
 	return nil
 }
 
@@ -1431,32 +1283,29 @@ func isValidHTTPMethod(method string) bool {
 }
 
 func validateHeader(header string) error {
-	// Basic header validation - ensure it contains a colon
 	if !strings.Contains(header, ":") {
 		return fmt.Errorf("header must be in 'Key: Value' format")
 	}
-	
-	// Prevent header injection
+
 	if strings.Contains(header, "\n") || strings.Contains(header, "\r") {
 		return fmt.Errorf("headers cannot contain newline characters")
 	}
-	
+
 	return nil
 }
 
 func formatHTTPResponse(method, url, response string) string {
 	var result strings.Builder
-	
+
 	result.WriteString(fmt.Sprintf("🌐 HTTP %s Request\n", method))
 	result.WriteString(fmt.Sprintf("URL: %s\n", url))
 	result.WriteString(strings.Repeat("=", 50) + "\n\n")
-	
+
 	if strings.TrimSpace(response) == "" {
 		result.WriteString("(Empty response)\n")
 	} else {
 		result.WriteString(response)
 	}
-	
+
 	return result.String()
 }
-

@@ -3,40 +3,26 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"loki-code/clients"
 	"strings"
 	"time"
 )
 
-// ChatMessage represents a message in the conversation
-type ChatMessage struct {
-	Role      string     `json:"role"`
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-}
-
-type UserTask struct {
-	ID        string    `json:"id"`
-	Goal      string    `json:"goal"`
-	Context   string    `json:"context"`
-	CreatedAt time.Time `json:"created_at"`
-	Status    string    `json:"status"` // "active", "completed", "abandoned"
-	SubTasks  []string  `json:"sub_tasks"`
-}
-
+// ContextManager handles conversation context with token management
 type ContextManager struct {
-	messages          []ChatMessage
-	maxTokens         int
-	systemPrompt      ChatMessage
-	planModePrompt    ChatMessage
-	retainCount       int  // Number of recent exchanges to retain
-	planMode          bool // Whether plan mode is active
-	conciseMode       bool // Whether concise mode is active
-	activeTask        *UserTask
-	taskHistory       []UserTask
+	messages       []clients.ChatMessage
+	maxTokens      int
+	systemPrompt   clients.ChatMessage
+	planModePrompt clients.ChatMessage
+	retainCount    int
+	planMode       bool
+	conciseMode    bool
+	activeTask     *clients.UserTask
+	taskHistory    []clients.UserTask
 }
 
-func NewContextManager(maxTokens int) *ContextManager {
-	systemPrompt := ChatMessage{
+func NewContextManager(maxTokens int, toolProvider clients.ToolSchemaProvider) *ContextManager {
+	systemPrompt := clients.ChatMessage{
 		Role: "system",
 		Content: fmt.Sprintf(`You are Loki Code, an AI coding assistant that implements solutions intelligently.
 
@@ -94,10 +80,10 @@ INFORMATION TASKS:
 
 %s
 
-CRITICAL: You are in EXECUTE MODE - make actual changes while being thoughtful about implementation!`, generateToolSchema()),
+CRITICAL: You are in EXECUTE MODE - make actual changes while being thoughtful about implementation!`, generateToolSchema(toolProvider)),
 	}
 
-	planModePrompt := ChatMessage{
+	planModePrompt := clients.ChatMessage{
 		Role: "system",
 		Content: fmt.Sprintf(`You are Loki Code in PLAN MODE - you create detailed execution plans WITHOUT making changes.
 
@@ -131,182 +117,150 @@ For implementation tasks: Create comprehensive plans that others can execute in 
 
 %s
 
-CRITICAL: You are in PLAN MODE - analyze and plan thoroughly, but don't make actual changes!`, generateToolSchema()),
+CRITICAL: You are in PLAN MODE - analyze and plan thoroughly, but don't make actual changes!`, generateToolSchema(toolProvider)),
 	}
 
 	return &ContextManager{
-		messages:       []ChatMessage{},
+		messages:       []clients.ChatMessage{},
 		maxTokens:      maxTokens,
 		systemPrompt:   systemPrompt,
 		planModePrompt: planModePrompt,
-		retainCount:    16, // Keep last 8 user+assistant exchanges (more context after tool usage)
+		retainCount:    16,
 		planMode:       false,
 	}
 }
 
-func (cm *ContextManager) AddMessage(message ChatMessage) {
-	// Detect new tasks from user messages
+func (cm *ContextManager) AddMessage(message clients.ChatMessage) {
 	if message.Role == "user" {
 		detectedTask := cm.detectUserTask(message)
 		if detectedTask != nil {
-			// If no active task or this looks like a new significant task
 			if cm.activeTask == nil || cm.activeTask.Status != "active" {
 				cm.activeTask = detectedTask
 				fmt.Printf("🎯 New task detected: %s\n", detectedTask.Goal)
 			}
 		}
 	}
-	
+
 	cm.messages = append(cm.messages, message)
-	
-	// Debug: Show what's being added
-	contentLength := len(message.Content)
-	if contentLength > 100 {
-		fmt.Printf("🔍 Adding %s message (%d chars): %s...\n", 
-			message.Role, contentLength, message.Content[:100])
-	}
-	
+
 	// Check for task completion in assistant messages
 	if message.Role == "assistant" {
 		cm.checkTaskCompletion(message)
 	}
-	
+
 	cm.trimIfNeeded()
 }
 
-func (cm *ContextManager) GetMessages() []ChatMessage {
-	// Always start with appropriate system prompt
-	var activePrompt ChatMessage
+func (cm *ContextManager) GetMessages() []clients.ChatMessage {
+	var activePrompt clients.ChatMessage
 	if cm.planMode {
 		activePrompt = cm.planModePrompt
 	} else {
 		activePrompt = cm.systemPrompt
 	}
-	
-	// Add active task context if present
+
 	if cm.activeTask != nil && cm.activeTask.Status == "active" {
 		activePrompt = cm.enhancePromptWithTask(activePrompt)
 	}
-	
-	// Modify prompt for concise mode
+
 	if cm.conciseMode {
 		activePrompt = cm.addConciseModeInstructions(activePrompt)
 	}
-	
-	result := []ChatMessage{activePrompt}
+
+	result := []clients.ChatMessage{activePrompt}
 	result = append(result, cm.messages...)
 	return result
 }
 
-func (cm *ContextManager) GetSystemPrompt() ChatMessage {
+func (cm *ContextManager) GetSystemPrompt() clients.ChatMessage {
 	return cm.systemPrompt
 }
 
 func (cm *ContextManager) trimIfNeeded() {
 	allMessages := cm.GetMessages()
 	currentTokens := cm.estimateTokens(allMessages)
-	
+
 	if currentTokens <= cm.maxTokens {
 		return
 	}
 
-	// Don't trim if we have active tool calls in progress
 	if cm.HasToolCallsInProgress() {
-		fmt.Printf("\n🔧 Context limit reached (%d/%d tokens) but tool calls in progress - delaying trim\n", 
+		fmt.Printf("\n🔧 Context limit reached (%d/%d tokens) but tool calls in progress - delaying trim\n",
 			currentTokens, cm.maxTokens)
 		return
 	}
 
 	beforeMessageCount := len(cm.messages)
-	fmt.Printf("\n⚠️ Context approaching limit (%d/%d tokens, %d messages), trimming...\n", 
+	fmt.Printf("\n⚠️ Context approaching limit (%d/%d tokens, %d messages), trimming...\n",
 		currentTokens, cm.maxTokens, beforeMessageCount)
-	
-	// Find the cutoff point while preserving tool call sequences
+
 	cm.smartTrim()
-	
+
 	afterMessageCount := len(cm.messages)
 	trimmedTokens := cm.estimateTokens(cm.GetMessages())
-	fmt.Printf("✓ Context trimmed to %d tokens (%d messages, removed %d messages)\n", 
+	fmt.Printf("✓ Context trimmed to %d tokens (%d messages, removed %d messages)\n",
 		trimmedTokens, afterMessageCount, beforeMessageCount-afterMessageCount)
 }
 
 func (cm *ContextManager) smartTrim() {
 	if len(cm.messages) <= cm.retainCount {
-		return // Don't trim if we have few messages
+		return
 	}
 
-	// Be more conservative - keep more recent context including tool interactions
-	conservativeRetainCount := cm.retainCount + 4 // Extra buffer for tool sequences
+	conservativeRetainCount := cm.retainCount + 4
 	if len(cm.messages) <= conservativeRetainCount {
 		return
 	}
-	
-	// Always keep the last retainCount messages to maintain recent context
+
 	keepFromIndex := len(cm.messages) - conservativeRetainCount
-	
-	// Look backwards to find a safe cutoff point (avoid breaking tool sequences)
 	cutoffIndex := cm.findSafeCutoff(keepFromIndex)
-	
+
 	if cutoffIndex > 0 {
 		cm.messages = cm.messages[cutoffIndex:]
 	}
 }
 
 func (cm *ContextManager) findSafeCutoff(preferredIndex int) int {
-	// Start from preferred index and look backwards for a safe cut
 	for i := preferredIndex; i > 0; i-- {
-		// Safe to cut after assistant messages that don't have tool calls
-		if i < len(cm.messages) && 
-		   cm.messages[i-1].Role == "assistant" && 
-		   len(cm.messages[i-1].ToolCalls) == 0 {
+		if i < len(cm.messages) &&
+			cm.messages[i-1].Role == "assistant" &&
+			len(cm.messages[i-1].ToolCalls) == 0 {
 			return i
 		}
-		
-		// Also safe to cut after tool messages (tool sequences are complete)
+
 		if i < len(cm.messages) && cm.messages[i-1].Role == "tool" {
 			return i
 		}
 	}
-	
-	// If no safe cutoff found, cut at preferred index anyway
+
 	return preferredIndex
 }
 
-func (cm *ContextManager) estimateTokens(messages []ChatMessage) int {
+func (cm *ContextManager) estimateTokens(messages []clients.ChatMessage) int {
 	totalChars := 0
-	
+
 	for _, msg := range messages {
-		// Count message content with better estimation for different content types
 		contentChars := len(msg.Content)
-		
-		// Tool results (especially code) are more token-dense
+
 		if msg.Role == "tool" {
-			// Code content has more symbols, shorter tokens on average
-			totalChars += int(float64(contentChars) * 1.2) // 20% more tokens for code
+			totalChars += int(float64(contentChars) * 1.2)
 		} else {
-			// Regular conversation content
 			totalChars += contentChars
 		}
-		
-		// Count tool calls (these can be significant)
+
 		for _, toolCall := range msg.ToolCalls {
 			totalChars += len(toolCall.Function.Name)
-			// Estimate size of arguments (JSON structure)
 			for key, value := range toolCall.Function.Arguments {
 				totalChars += len(key)
 				totalChars += len(fmt.Sprintf("%v", value))
 			}
 		}
-		
-		// Add overhead for JSON structure
-		totalChars += 50 // Rough estimate for role, timestamps, etc.
+
+		totalChars += 50
 	}
-	
-	// Convert chars to tokens (rough approximation: ~4 chars per token for mixed content)
+
 	estimatedTokens := totalChars / 4
-	
-	// Reduced safety buffer since we're being more conservative about trimming
-	return int(float64(estimatedTokens) * 1.15) // 15% overhead instead of 30%
+	return int(float64(estimatedTokens) * 1.15)
 }
 
 func (cm *ContextManager) GetStats() (int, int, int) {
@@ -321,10 +275,10 @@ func (cm *ContextManager) SetMaxTokens(maxTokens int) {
 }
 
 func (cm *ContextManager) Clear() {
-	cm.messages = []ChatMessage{}
+	cm.messages = []clients.ChatMessage{}
 }
 
-func (cm *ContextManager) GetLastUserMessage() *ChatMessage {
+func (cm *ContextManager) GetLastUserMessage() *clients.ChatMessage {
 	for i := len(cm.messages) - 1; i >= 0; i-- {
 		if cm.messages[i].Role == "user" {
 			return &cm.messages[i]
@@ -334,48 +288,36 @@ func (cm *ContextManager) GetLastUserMessage() *ChatMessage {
 }
 
 func (cm *ContextManager) HasToolCallsInProgress() bool {
-	// Check if the last assistant message has tool calls that haven't been resolved
 	for i := len(cm.messages) - 1; i >= 0; i-- {
 		msg := cm.messages[i]
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
-			// Look for corresponding tool results
 			for j := i + 1; j < len(cm.messages); j++ {
 				if cm.messages[j].Role == "tool" {
-					return false // Found tool results, so calls are resolved
+					return false
 				}
 			}
-			return true // Found tool calls without results
+			return true
 		}
 		if msg.Role == "user" {
-			break // Reached next user message, no pending tool calls
+			break
 		}
 	}
 	return false
 }
 
-// CompactClient interface to avoid circular dependency
-type CompactClient interface {
-	CompactMessages(messages []ChatMessage) (string, error)
-}
-
 func (cm *ContextManager) CanCompact() bool {
-	// Check if we're using enough context to warrant compacting
 	currentTokens := cm.estimateTokens(cm.GetMessages())
-	
-	// Only compact if we're using at least 60% of available context
 	threshold := int(float64(cm.maxTokens) * 0.6)
-	
-	// Also require minimum message count to ensure there's meaningful content
 	minMessages := 6
-	
+
 	return currentTokens >= threshold && len(cm.messages) >= minMessages
 }
 
-func (cm *ContextManager) CompactContext(client CompactClient) error {
+func (cm *ContextManager) CompactContext(compactFunc clients.CompactFunc) error {
 	currentTokens := cm.estimateTokens(cm.GetMessages())
 	if !cm.CanCompact() {
 		threshold := int(float64(cm.maxTokens) * 0.6)
-		return fmt.Errorf("context not ready for compacting (using %d/%d tokens, need %d+ tokens)", 
+		return fmt.Errorf("context not ready for compacting (using %d/%d tokens, need %d+ tokens)",
 			currentTokens, cm.maxTokens, threshold)
 	}
 
@@ -383,77 +325,54 @@ func (cm *ContextManager) CompactContext(client CompactClient) error {
 		return fmt.Errorf("cannot compact while tool calls are in progress")
 	}
 
-	// Calculate how much context to keep recent (aim for ~25% of max tokens)
 	targetRecentTokens := int(float64(cm.maxTokens) * 0.25)
-	
-	// Find cutoff point by working backwards and estimating tokens
-	recentMessages := []ChatMessage{}
-	
+
+	recentMessages := []clients.ChatMessage{}
+
 	for i := len(cm.messages) - 1; i >= 0; i-- {
-		testMessages := append([]ChatMessage{cm.messages[i]}, recentMessages...)
+		testMessages := append([]clients.ChatMessage{cm.messages[i]}, recentMessages...)
 		testTokens := cm.estimateTokens(testMessages)
-		
+
 		if testTokens > targetRecentTokens && len(recentMessages) > 0 {
-			break // Stop before exceeding target
+			break
 		}
-		
+
 		recentMessages = testMessages
 	}
-	
-	// Ensure we have something to compact
+
 	compactEndIndex := len(cm.messages) - len(recentMessages)
 	if compactEndIndex <= 1 {
 		return fmt.Errorf("not enough content to compact (would keep %d recent messages)", len(recentMessages))
 	}
-	
+
 	messagesToCompact := cm.messages[:compactEndIndex]
 
-	// Get summary from LLM
 	fmt.Println("🔄 Generating conversation summary...")
-	summary, err := client.CompactMessages(messagesToCompact)
+	summary, err := compactFunc(messagesToCompact)
 	if err != nil {
 		return fmt.Errorf("failed to generate summary: %v", err)
 	}
 
-	// Create summary message
-	summaryMessage := ChatMessage{
+	summaryMessage := clients.ChatMessage{
 		Role:    "assistant",
 		Content: fmt.Sprintf("📋 Context Summary: %s", summary),
 	}
 
-	// Calculate token savings
-	oldTokens := cm.estimateTokens(append([]ChatMessage{cm.systemPrompt}, cm.messages...))
-	
-	// Replace compacted messages with summary
-	cm.messages = append([]ChatMessage{summaryMessage}, recentMessages...)
-	
+	oldTokens := cm.estimateTokens(append([]clients.ChatMessage{cm.systemPrompt}, cm.messages...))
+
+	cm.messages = append([]clients.ChatMessage{summaryMessage}, recentMessages...)
+
 	newTokens := cm.estimateTokens(cm.GetMessages())
 	savedTokens := oldTokens - newTokens
 	compactedMessageCount := len(messagesToCompact)
 	keptMessageCount := len(recentMessages)
 
-	fmt.Printf("✓ Context compacted: %d → %d tokens (saved %d tokens)\n", 
+	fmt.Printf("✓ Context compacted: %d → %d tokens (saved %d tokens)\n",
 		oldTokens, newTokens, savedTokens)
-	fmt.Printf("📊 Compacted %d messages → 1 summary, kept %d recent messages\n", 
+	fmt.Printf("📊 Compacted %d messages → 1 summary, kept %d recent messages\n",
 		compactedMessageCount, keptMessageCount)
-	
+
 	return nil
-}
-
-func (cm *ContextManager) CreateCompactingPrompt(messages []ChatMessage) string {
-	return `CONTEXT SUMMARIZATION REQUEST
-
-Please provide a concise summary of the following conversation history. Focus on:
-- Key decisions made and conclusions reached
-- Important information discovered or discussed
-- File operations performed and their results
-- Code solutions or technical details discussed
-- Any ongoing tasks, context, or important state
-
-Keep the summary brief but preserve essential context for continuing the conversation.
-Organize the summary logically and use clear, concise language.
-
-CONVERSATION TO SUMMARIZE:`
 }
 
 func (cm *ContextManager) SetPlanMode(enabled bool) {
@@ -472,12 +391,12 @@ func (cm *ContextManager) IsInConciseMode() bool {
 	return cm.conciseMode
 }
 
-func (cm *ContextManager) addConciseModeInstructions(prompt ChatMessage) ChatMessage {
+func (cm *ContextManager) addConciseModeInstructions(prompt clients.ChatMessage) clients.ChatMessage {
 	conciseInstructions := `
 
 RESPONSE MODE: CONCISE
 - Keep all responses brief and to-the-point
-- Provide essential information only  
+- Provide essential information only
 - Use bullet points when appropriate
 - Avoid lengthy explanations unless specifically requested
 - Focus on direct answers and immediate next steps
@@ -493,14 +412,13 @@ func generateTaskID() string {
 	return fmt.Sprintf("task_%d", time.Now().Unix())
 }
 
-func (cm *ContextManager) detectUserTask(message ChatMessage) *UserTask {
+func (cm *ContextManager) detectUserTask(message clients.ChatMessage) *clients.UserTask {
 	if message.Role != "user" {
 		return nil
 	}
-	
+
 	content := strings.ToLower(message.Content)
-	
-	// Heuristics for significant tasks that need tracking
+
 	significantKeywords := []string{
 		"implement", "add", "create", "build", "make", "write",
 		"fix", "debug", "solve", "resolve", "repair",
@@ -508,8 +426,7 @@ func (cm *ContextManager) detectUserTask(message ChatMessage) *UserTask {
 		"analyze", "review", "explain", "understand", "find",
 		"remove", "delete", "change", "modify", "replace",
 	}
-	
-	// Check for task-indicating patterns
+
 	hasSignificantKeyword := false
 	for _, keyword := range significantKeywords {
 		if strings.Contains(content, keyword) {
@@ -517,13 +434,12 @@ func (cm *ContextManager) detectUserTask(message ChatMessage) *UserTask {
 			break
 		}
 	}
-	
-	// Additional patterns that indicate tasks
+
 	taskPatterns := []string{
 		"help me", "can you", "i want", "i need", "could you",
 		"let's", "how to", "what's wrong", "why is",
 	}
-	
+
 	hasTaskPattern := false
 	for _, pattern := range taskPatterns {
 		if strings.Contains(content, pattern) {
@@ -531,13 +447,12 @@ func (cm *ContextManager) detectUserTask(message ChatMessage) *UserTask {
 			break
 		}
 	}
-	
-	// Ignore simple questions/commands
+
 	simplePatterns := []string{
 		"what is", "who is", "when is", "where is",
 		"/", "exit", "quit", "help", "status",
 	}
-	
+
 	isSimple := false
 	for _, pattern := range simplePatterns {
 		if strings.Contains(content, pattern) {
@@ -545,15 +460,14 @@ func (cm *ContextManager) detectUserTask(message ChatMessage) *UserTask {
 			break
 		}
 	}
-	
-	// Create task if it looks significant and not simple
+
 	if (hasSignificantKeyword || hasTaskPattern) && !isSimple && len(message.Content) > 10 {
 		goal := message.Content
 		if len(goal) > 200 {
 			goal = goal[:200] + "..."
 		}
-		
-		return &UserTask{
+
+		return &clients.UserTask{
 			ID:        generateTaskID(),
 			Goal:      goal,
 			Context:   "",
@@ -562,12 +476,12 @@ func (cm *ContextManager) detectUserTask(message ChatMessage) *UserTask {
 			SubTasks:  []string{},
 		}
 	}
-	
+
 	return nil
 }
 
 func (cm *ContextManager) SetActiveTask(goal string) {
-	cm.activeTask = &UserTask{
+	cm.activeTask = &clients.UserTask{
 		ID:        generateTaskID(),
 		Goal:      goal,
 		Context:   "",
@@ -578,7 +492,7 @@ func (cm *ContextManager) SetActiveTask(goal string) {
 	fmt.Printf("🎯 Active task set: %s\n", goal)
 }
 
-func (cm *ContextManager) GetActiveTask() *UserTask {
+func (cm *ContextManager) GetActiveTask() *clients.UserTask {
 	return cm.activeTask
 }
 
@@ -591,11 +505,11 @@ func (cm *ContextManager) CompleteCurrentTask(summary string) {
 	}
 }
 
-func (cm *ContextManager) enhancePromptWithTask(prompt ChatMessage) ChatMessage {
+func (cm *ContextManager) enhancePromptWithTask(prompt clients.ChatMessage) clients.ChatMessage {
 	if cm.activeTask == nil || cm.activeTask.Status != "active" {
 		return prompt
 	}
-	
+
 	taskContext := fmt.Sprintf(`
 
 🎯 CURRENT ACTIVE TASK:
@@ -615,23 +529,22 @@ When you believe this task is fully completed, end your response with "TASK COMP
 		cm.activeTask.Goal,
 		cm.activeTask.CreatedAt.Format("15:04:05"),
 		cm.activeTask.Status)
-	
+
 	enhanced := prompt
 	enhanced.Content = prompt.Content + taskContext
 	return enhanced
 }
 
-func (cm *ContextManager) checkTaskCompletion(assistantMessage ChatMessage) {
+func (cm *ContextManager) checkTaskCompletion(assistantMessage clients.ChatMessage) {
 	if cm.activeTask == nil || cm.activeTask.Status != "active" {
 		return
 	}
-	
+
 	content := strings.ToLower(assistantMessage.Content)
-	
-	// Look for explicit completion indicators
+
 	completionPhrases := []string{
 		"task completed",
-		"implementation complete", 
+		"implementation complete",
 		"implementation is complete",
 		"task is done",
 		"task finished",
@@ -647,10 +560,9 @@ func (cm *ContextManager) checkTaskCompletion(assistantMessage ChatMessage) {
 		"the summary you requested",
 		"analysis you asked for",
 	}
-	
+
 	for _, phrase := range completionPhrases {
 		if strings.Contains(content, phrase) {
-			// Extract summary if available
 			summary := cm.extractCompletionSummary(assistantMessage.Content)
 			cm.CompleteCurrentTask(summary)
 			return
@@ -659,62 +571,57 @@ func (cm *ContextManager) checkTaskCompletion(assistantMessage ChatMessage) {
 }
 
 func (cm *ContextManager) extractCompletionSummary(content string) string {
-	// Look for "TASK COMPLETED: summary" pattern
 	taskCompletedIndex := strings.Index(strings.ToLower(content), "task completed")
 	if taskCompletedIndex != -1 {
-		// Extract the summary after "TASK COMPLETED:"
 		remaining := content[taskCompletedIndex:]
 		colonIndex := strings.Index(remaining, ":")
 		if colonIndex != -1 && len(remaining) > colonIndex+1 {
 			summary := strings.TrimSpace(remaining[colonIndex+1:])
-			// Limit summary length
 			if len(summary) > 100 {
 				summary = summary[:100] + "..."
 			}
 			return summary
 		}
 	}
-	
-	// Fallback: use the task goal
+
 	if cm.activeTask != nil {
 		return cm.activeTask.Goal
 	}
-	
+
 	return "Task completed"
 }
 
 // generateToolSchema creates a formatted JSON string representation of available tools
-func generateToolSchema() string {
-	tools := GetAvailableTools()
-	
+func generateToolSchema(toolProvider clients.ToolSchemaProvider) string {
+	tools := toolProvider()
+
 	var schema strings.Builder
 	schema.WriteString("Available tools (use exact JSON format):\n\n")
-	
+
 	for i, tool := range tools {
-		// Convert tool to pretty JSON
 		toolJSON, err := json.MarshalIndent(tool, "", "  ")
 		if err != nil {
 			continue
 		}
-		
+
 		schema.WriteString(fmt.Sprintf("%d. %s\n", i+1, tool.Function.Name))
 		schema.WriteString(fmt.Sprintf("   %s\n", tool.Function.Description))
 		schema.WriteString(fmt.Sprintf("   Schema: %s\n\n", string(toolJSON)))
 	}
-	
+
 	schema.WriteString("SMART TOOL USAGE PATTERNS:\n\n")
 	schema.WriteString("1. Code Implementation: list_files → read_file → [plan] → create_file/update_file\n")
 	schema.WriteString("2. Bug Fixes: read_file → grep_content → [analyze] → update_file\n")
 	schema.WriteString("3. New Features: find_files → read_file → [design] → create_file\n")
 	schema.WriteString("4. Code Analysis: read_file → grep_content → analyze_code → [insights]\n")
 	schema.WriteString("5. Project Understanding: list_files → read_file → get_pwd → [context]\n\n")
-	
+
 	schema.WriteString("EXECUTION WORKFLOW:\n")
 	schema.WriteString("- READ first to understand context\n")
-	schema.WriteString("- PLAN your implementation approach\n") 
+	schema.WriteString("- PLAN your implementation approach\n")
 	schema.WriteString("- USE tools to implement changes\n")
 	schema.WriteString("- VERIFY the implementation is complete\n\n")
-	
+
 	schema.WriteString("TOOL CALL FORMAT EXAMPLES:\n\n")
 	schema.WriteString("Standard format (preferred):\n")
 	schema.WriteString(`{"name": "read_file", "arguments": {"path": "example.go"}}`)
@@ -725,6 +632,6 @@ func generateToolSchema() string {
 	schema.WriteString("- Include all required parameters\n")
 	schema.WriteString("- Wrap JSON in explanation text if needed\n")
 	schema.WriteString("- Always follow the smart usage patterns above\n")
-	
+
 	return schema.String()
 }

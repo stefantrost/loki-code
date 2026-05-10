@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,7 +36,7 @@ func LoadConfig(configFilePath string) (clients.ClientConfig, error) {
 		for _, path := range defaultPaths {
 			if configFileExists(path) {
 				if err := loadConfigFromFile(path, &config); err != nil {
-					fmt.Printf("Warning: failed to load config file %s: %v\n", path, err)
+					slog.Warn("Failed to load config file", "file", path, "error", err)
 				} else {
 					fmt.Printf("✓ Loaded configuration from: %s\n", path)
 					break
@@ -78,7 +79,7 @@ func loadConfigFromFile(filePath string, config *clients.ClientConfig) error {
 		// Parse KEY=VALUE format
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) != 2 {
-			fmt.Printf("Warning: invalid format in %s line %d: %s\n", filePath, lineNum, line)
+			slog.Warn("Invalid config format", "file", filePath, "line", lineNum, "content", line)
 			continue
 		}
 		
@@ -104,7 +105,7 @@ func loadConfigFromFile(filePath string, config *clients.ClientConfig) error {
 		case "DEBUG":
 			config.Debug = strings.ToLower(value) == "true" || value == "1"
 		default:
-			fmt.Printf("Warning: unknown configuration key in %s: %s\n", filePath, key)
+			slog.Warn("Unknown configuration key", "file", filePath, "key", key)
 		}
 	}
 	
@@ -185,11 +186,6 @@ func ValidateAndFixConfig(config *clients.ClientConfig) error {
 	case "openai", "openai-compatible":
 		// Ensure URL doesn't end with slash
 		config.BaseURL = strings.TrimSuffix(config.BaseURL, "/")
-		
-		// Warn about missing token
-		if config.BearerToken == "" {
-			return fmt.Errorf("bearer token is required for OpenAI-compatible APIs. Set BEARER_TOKEN in your config file or LOKI_BEARER_TOKEN environment variable")
-		}
 		
 		// Validate URL format
 		if !strings.HasPrefix(config.BaseURL, "http") {
