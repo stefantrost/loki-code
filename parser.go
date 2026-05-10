@@ -108,3 +108,12 @@ func (p *ToolCallParser) extractJSONObjects(content string) []string {
 	
 	return jsonObjects
 }
+
+// getKeys returns the keys of a map for debugging
+func getKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}

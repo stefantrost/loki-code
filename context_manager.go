@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+// ChatMessage represents a message in the conversation
+type ChatMessage struct {
+	Role      string     `json:"role"`
+	Content   string     `json:"content"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+}
+
 type UserTask struct {
 	ID        string    `json:"id"`
 	Goal      string    `json:"goal"`
