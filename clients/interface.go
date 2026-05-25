@@ -66,40 +66,59 @@ type ContextManager interface {
 	CompleteCurrentTask(string)
 }
 
-// LLMClient defines the interface that all LLM clients must implement
-type LLMClient interface {
-	// Core chat functionality
+// Chat is the streaming-chat surface a client must implement.
+type Chat interface {
 	StreamChat(userInput string) error
 	StreamChatWithHistory(messages []ChatMessage) error
+}
 
-	// Context and conversation management
+// ContextLifecycle covers conversation state and compaction.
+type ContextLifecycle interface {
 	ClearContext()
 	GetStats() (int, int, int) // currentTokens, messageCount, maxTokens
 	CanCompact() bool
 	CompactContext() error
+}
 
-	// Mode management
+// Modes toggles plan and concise modes.
+type Modes interface {
 	IsInPlanMode() bool
 	EnablePlanMode()
 	DisablePlanMode()
 	IsInConciseMode() bool
 	EnableConciseMode()
 	DisableConciseMode()
+}
 
-	// Task management
+// Tasks exposes user-task tracking.
+type Tasks interface {
 	SetActiveTask(task string)
 	GetActiveTask() string
 	CompleteCurrentTask()
+}
 
-	// Configuration
-	SetDebug(enabled bool)
-
-	// Interruption support
+// Interruptible lets callers cancel an in-flight stream.
+type Interruptible interface {
 	Interrupt()
 	IsResponseActive() bool
+}
 
-	// Context window detection
+// WindowDetector reports the model's usable context window in tokens.
+type WindowDetector interface {
 	DetectContextWindow() (int, error)
+}
+
+// LLMClient is the union surface every concrete client implements. Consumers
+// that need only a subset should depend on the narrower interfaces above.
+type LLMClient interface {
+	Chat
+	ContextLifecycle
+	Modes
+	Tasks
+	Interruptible
+	WindowDetector
+	SetDebug(enabled bool)
+	SetTruncator(TruncationPolicy)
 }
 
 // ClientConfig holds configuration for creating clients

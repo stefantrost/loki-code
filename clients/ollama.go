@@ -8,23 +8,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 )
 
 // OllamaClient implements the LLMClient interface for Ollama API
 type OllamaClient struct {
-	baseURL          string
-	modelName        string
-	toolExecutor     ToolExecutor
-	toolSchemaProvider ToolSchemaProvider
-	planMode         bool
-	conciseMode      bool
-	debug            bool
-	responseActive   bool
-	interruptChan    chan struct{}
-	contextManager   ContextManager
-	httpClient       *http.Client
+	*baseClient
+	baseURL string
 }
 
 // Ollama-specific request/response structures
@@ -46,72 +36,101 @@ type OllamaModelShowResponse struct {
 // NewOllamaClient creates a new Ollama client with the given configuration
 func NewOllamaClient(baseURL, modelName string, ctxMgr ContextManager, toolExec ToolExecutor, toolProvider ToolSchemaProvider) *OllamaClient {
 	return &OllamaClient{
-		baseURL:          baseURL,
-		modelName:        modelName,
-		toolExecutor:     toolExec,
-		toolSchemaProvider: toolProvider,
-		contextManager:   ctxMgr,
-		interruptChan:    make(chan struct{}),
-		httpClient: &http.Client{
-			Timeout: 5 * time.Minute, // Hard timeout for streaming
+		baseClient: &baseClient{
+			modelName:          modelName,
+			toolExecutor:       toolExec,
+			toolSchemaProvider: toolProvider,
+			contextManager:     ctxMgr,
+			interruptChan:      make(chan struct{}),
+			httpClient: &http.Client{
+				Timeout: 5 * time.Minute, // Hard timeout for streaming
+			},
 		},
+		baseURL: baseURL,
 	}
 }
 
+func (c *OllamaClient) planMode() bool { return c.IsInPlanMode() }
+
 // StreamChat implements LLMClient interface
 func (c *OllamaClient) StreamChat(userInput string) error {
+	slog.Debug("StreamChat started", "user_input_length", len(userInput), "user_input_preview", truncateString(userInput, 200))
+
 	userMessage := ChatMessage{
 		Role:    "user",
 		Content: userInput,
 	}
 	c.contextManager.AddMessage(userMessage)
+	_, msgs, _ := c.contextManager.GetStats()
+	slog.Debug("User message added to context", "total_messages", msgs)
 
 	messages := c.contextManager.GetMessages()
+	slog.Debug("Retrieved messages for API call", "message_count", len(messages))
 	return c.StreamChatWithHistory(messages)
 }
 
 // StreamChatWithHistory implements LLMClient interface
 func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 	currentTokens, messageCount, maxTokens := c.contextManager.GetStats()
+	slog.Debug("Starting API request", "model", c.modelName, "message_count", len(messages),
+		"current_tokens", currentTokens, "max_tokens", maxTokens)
 	fmt.Printf("[Context: %d/%d tokens, %d messages]\n", currentTokens, maxTokens, messageCount-1)
 
-	c.debugLog("Sending %d messages to model %s", len(messages), c.modelName)
+	slog.Debug("Building request with all messages", "message_count", len(messages))
 	for i, msg := range messages {
-		c.debugLog("Message %d: role=%s, content_length=%d, tool_calls=%d",
-			i+1, msg.Role, len(msg.Content), len(msg.ToolCalls))
-		if c.debug && len(msg.Content) > 0 {
-			c.debugLog("  Content: %s", msg.Content)
+		slog.Debug("Message in request", "index", i, "role", msg.Role, "content_length", len(msg.Content),
+			"tool_calls_count", len(msg.ToolCalls))
+		if msg.Role == "user" || msg.Role == "assistant" {
+			slog.Debug("Message content preview", "index", i, "role", msg.Role, "preview", truncateString(msg.Content, 300))
 		}
+		if len(msg.ToolCalls) > 0 {
+			slog.Debug("Tool calls in message", "index", i, "tool_calls", msg.ToolCalls)
+		}
+	}
+
+	tools := c.toolSchemaProvider()
+	slog.Debug("Retrieved tool schemas", "tool_count", len(tools))
+	for _, tool := range tools {
+		slog.Debug("Tool schema", "tool_name", tool.Function.Name, "tool_description", truncateString(tool.Function.Description, 200),
+			"arguments", tool.Function.Arguments)
 	}
 
 	request := OllamaRequest{
 		Model:    c.modelName,
 		Messages: messages,
 		Stream:   true,
-		Tools:    c.toolSchemaProvider(),
+		Tools:    tools,
 	}
 
 	jsonData, err := json.Marshal(request)
 	if err != nil {
+		slog.Error("Failed to marshal request", "error", err)
 		return fmt.Errorf("error marshaling request: %v", err)
 	}
 
+	slog.Debug("Request JSON size", "bytes", len(jsonData))
 	if c.debug {
 		c.debugLog("Full request JSON: %s", string(jsonData))
 	}
 
+	slog.Debug("Sending HTTP POST request", "url", c.baseURL+"/api/chat")
 	resp, err := c.httpClient.Post(c.baseURL+"/api/chat", "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
+		slog.Error("HTTP request failed", "error", err)
 		return fmt.Errorf("error making request: %v", err)
 	}
 	defer resp.Body.Close()
 
+	slog.Debug("Received HTTP response", "status", resp.Status, "status_code", resp.StatusCode)
+
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
+			slog.Error("Failed to read error response body", "error", err)
 			return fmt.Errorf("API returned status %s and failed to read error details: %v", resp.Status, err)
 		}
 		errorBody := string(bodyBytes)
+		slog.Error("API returned error response", "status", resp.Status, "error_body", errorBody)
 
 		if resp.StatusCode == http.StatusBadRequest {
 			slog.Error("Ollama API error", "status", resp.Status, "error", errorBody)
@@ -120,16 +139,23 @@ func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 		return fmt.Errorf("API returned status: %s, details: %s", resp.Status, errorBody)
 	}
 
-	c.responseActive = true
-	defer func() { c.responseActive = false }()
+	slog.Debug("HTTP request successful, starting response stream")
+	c.responseActive.Store(true)
+	defer func() {
+		c.responseActive.Store(false)
+		slog.Debug("Response stream ended")
+	}()
 
 	scanner := bufio.NewScanner(resp.Body)
 	var currentMessage ChatMessage
 	var hasToolCalls bool
+	var totalChunks int
 
 	for scanner.Scan() {
+		totalChunks++
 		select {
 		case <-c.interruptChan:
+			slog.Debug("Interrupt received during streaming")
 			fmt.Println("\n[Interrupted]")
 			return nil
 		default:
@@ -142,22 +168,34 @@ func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 
 		var chatResponse ChatResponse
 		if err := json.Unmarshal([]byte(line), &chatResponse); err != nil {
+			slog.Debug("Failed to parse response line", "error", err, "line_preview", truncateString(line, 200))
 			c.debugLog("Failed to parse response line: %q, error: %v", line, err)
 			continue
 		}
 
+		slog.Debug("Parsed response chunk", "done", chatResponse.Done, "content_length", len(chatResponse.Message.Content),
+			"tool_calls_count", len(chatResponse.Message.ToolCalls))
+
 		if chatResponse.Message.Content != "" {
+			slog.Debug("Streaming content chunk", "content", chatResponse.Message.Content)
 			fmt.Print(chatResponse.Message.Content)
 			currentMessage.Content += chatResponse.Message.Content
 			c.debugLog("Streaming chunk received: %q", chatResponse.Message.Content)
 		}
 
 		if len(chatResponse.Message.ToolCalls) > 0 {
-			currentMessage.ToolCalls = append(currentMessage.ToolCalls, chatResponse.Message.ToolCalls...)
+			slog.Debug("Tool calls detected in response", "tool_calls", chatResponse.Message.ToolCalls)
+			currentMessage.ToolCalls = mergeToolCallDeltas(currentMessage.ToolCalls, chatResponse.Message.ToolCalls)
 			hasToolCalls = true
+			for _, tc := range chatResponse.Message.ToolCalls {
+				slog.Debug("Tool call details", "tool_id", tc.ID, "tool_name", tc.Function.Name,
+					"tool_args", tc.Function.Arguments)
+			}
 		}
 
 		if chatResponse.Done {
+			slog.Debug("Streaming complete", "total_chunks", totalChunks, "final_content_length", len(currentMessage.Content),
+				"has_tool_calls", hasToolCalls, "tool_calls_count", len(currentMessage.ToolCalls))
 			fmt.Println()
 			currentMessage.Role = "assistant"
 			c.debugLog("Streaming complete. Final message content: %q", currentMessage.Content)
@@ -165,98 +203,18 @@ func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 		}
 	}
 
+	slog.Debug("Stream processing finished", "total_chunks_processed", totalChunks, "has_tool_calls", hasToolCalls)
+
 	if hasToolCalls {
+		slog.Debug("Processing tool calls", "tool_calls_count", len(currentMessage.ToolCalls))
 		c.contextManager.AddMessage(currentMessage)
 		c.debugLog("Found %d tool calls, processing...", len(currentMessage.ToolCalls))
-		return c.handleToolCalls(currentMessage)
+		return c.handleToolCalls(c, currentMessage)
 	}
 
+	slog.Debug("No tool calls, adding assistant message to context")
 	c.contextManager.AddMessage(currentMessage)
 	return nil
-}
-
-func (c *OllamaClient) handleToolCalls(assistantMessage ChatMessage) error {
-	for _, toolCall := range assistantMessage.ToolCalls {
-		c.debugLog("Processing tool call: %s with function %s", toolCall.ID, toolCall.Function.Name)
-
-		fmt.Printf("🔧 Executing tools...\n")
-		fmt.Printf("Calling %s...\n", toolCall.Function.Name)
-
-		result, err := c.toolExecutor(toolCall, c.planMode)
-		if err != nil {
-			result = fmt.Sprintf("Error: %v", err)
-		}
-
-		result = c.truncateToolResult(result, toolCall.Function.Name)
-
-		c.debugLog("Tool %s result length: %d characters", toolCall.Function.Name, len(result))
-
-		fmt.Printf("✓ %s completed\n", toolCall.Function.Name)
-
-		toolMessage := ChatMessage{
-			Role:    "tool",
-			Content: result,
-		}
-		c.contextManager.AddMessage(toolMessage)
-	}
-
-	messages := c.contextManager.GetMessages()
-	return c.StreamChatWithHistory(messages)
-}
-
-func (c *OllamaClient) truncateToolResult(result, toolName string) string {
-	const maxLength = 5000
-
-	if len(result) <= maxLength {
-		return result
-	}
-
-	switch toolName {
-	case "read_file":
-		truncated := result[:maxLength-100]
-		truncated += fmt.Sprintf("\n\n... (file content truncated - showing first %d characters of %d total)",
-			maxLength-100, len(result))
-		return truncated
-
-	case "list_files", "find_files":
-		lines := strings.Split(result, "\n")
-		var truncated []string
-		currentLength := 0
-
-		for _, line := range lines {
-			if currentLength+len(line)+1 > maxLength-100 {
-				break
-			}
-			truncated = append(truncated, line)
-			currentLength += len(line) + 1
-		}
-
-		truncatedResult := strings.Join(truncated, "\n")
-		if len(truncated) < len(lines) {
-			truncatedResult += fmt.Sprintf("\n... (output truncated - showing %d of %d lines)",
-				len(truncated), len(lines))
-		}
-		return truncatedResult
-
-	default:
-		truncated := result[:maxLength-50]
-		truncated += fmt.Sprintf("... (truncated at %d characters)", maxLength-50)
-		return truncated
-	}
-}
-
-// LLMClient interface implementations
-
-func (c *OllamaClient) ClearContext() {
-	c.contextManager.Clear()
-}
-
-func (c *OllamaClient) GetStats() (int, int, int) {
-	return c.contextManager.GetStats()
-}
-
-func (c *OllamaClient) CanCompact() bool {
-	return c.contextManager.CanCompact()
 }
 
 func (c *OllamaClient) CompactContext() error {
@@ -304,60 +262,6 @@ Keep the summary under 200 words while preserving essential context.`
 	return chatResponse.Message.Content, nil
 }
 
-func (c *OllamaClient) EnablePlanMode() {
-	c.planMode = true
-	c.contextManager.SetPlanMode(true)
-}
-
-func (c *OllamaClient) DisablePlanMode() {
-	c.planMode = false
-	c.contextManager.SetPlanMode(false)
-}
-
-func (c *OllamaClient) IsInPlanMode() bool {
-	return c.planMode
-}
-
-func (c *OllamaClient) EnableConciseMode() {
-	c.conciseMode = true
-	c.contextManager.SetConciseMode(true)
-}
-
-func (c *OllamaClient) DisableConciseMode() {
-	c.conciseMode = false
-	c.contextManager.SetConciseMode(false)
-}
-
-func (c *OllamaClient) IsInConciseMode() bool {
-	return c.conciseMode
-}
-
-func (c *OllamaClient) SetActiveTask(task string) {
-	c.contextManager.SetActiveTask(task)
-}
-
-func (c *OllamaClient) GetActiveTask() string {
-	if task := c.contextManager.GetActiveTask(); task != nil {
-		return task.Goal
-	}
-	return ""
-}
-
-func (c *OllamaClient) CompleteCurrentTask() {
-	c.contextManager.CompleteCurrentTask("")
-}
-
-func (c *OllamaClient) Interrupt() {
-	select {
-	case c.interruptChan <- struct{}{}:
-	default:
-	}
-}
-
-func (c *OllamaClient) IsResponseActive() bool {
-	return c.responseActive
-}
-
 func (c *OllamaClient) DetectContextWindow() (int, error) {
 	request := OllamaModelShowRequest{
 		Model: c.modelName,
@@ -398,15 +302,3 @@ func (c *OllamaClient) DetectContextWindow() (int, error) {
 	return 4096, nil
 }
 
-func (c *OllamaClient) SetDebug(enabled bool) {
-	c.debug = enabled
-	if enabled {
-		slog.Info("Debug logging enabled for Ollama client")
-	}
-}
-
-func (c *OllamaClient) debugLog(format string, args ...interface{}) {
-	if c.debug {
-		slog.Debug(fmt.Sprintf(format, args...))
-	}
-}

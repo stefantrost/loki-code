@@ -3,8 +3,17 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"loki-code/clients"
 )
+
+func init() {
+	// Auto-confirm in tests; interactive prompts would block.
+	confirmYN = func(string) (bool, error) { return true, nil }
+	confirmDiff = func(_, _, _ string) (bool, error) { return true, nil }
+}
 
 func TestValidatePath(t *testing.T) {
 	tests := []struct {
@@ -258,5 +267,383 @@ func TestIsValidHTTPMethod(t *testing.T) {
 		if isValidHTTPMethod(method) {
 			t.Errorf("isValidHTTPMethod(%q) = true, want false", method)
 		}
+	}
+}
+
+func TestExecuteDeleteFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+
+	// Create a test file
+	testFile := "test_delete.txt"
+	os.WriteFile(testFile, []byte("delete me"), 0644)
+
+	result, err := executeDeleteFile(map[string]interface{}{
+		"path": testFile,
+	})
+
+	if err != nil {
+		t.Fatalf("executeDeleteFile error: %v", err)
+	}
+
+	expected := "File deleted successfully: test_delete.txt"
+	if result != expected {
+		t.Errorf("executeDeleteFile result = %q, want %q", result, expected)
+	}
+
+	// Verify file was actually deleted
+	if _, err := os.Stat(testFile); !os.IsNotExist(err) {
+		t.Error("file should have been deleted")
+	}
+}
+
+func TestExecuteDeleteFileNotFound(t *testing.T) {
+	_, err := executeDeleteFile(map[string]interface{}{
+		"path": "nonexistent.txt",
+	})
+
+	if err == nil {
+		t.Fatal("executeDeleteFile expected error for nonexistent file")
+	}
+}
+
+func TestExecuteUpdateFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+
+	// Create a test file
+	testFile := "test_update.txt"
+	os.WriteFile(testFile, []byte("original content"), 0644)
+
+	// Test with identical content (no confirmation needed)
+	result, err := executeUpdateFile(map[string]interface{}{
+		"path":    testFile,
+		"content": "original content",
+	})
+
+	if err != nil {
+		t.Fatalf("executeUpdateFile error: %v", err)
+	}
+
+	expected := "No changes needed for test_update.txt (content is identical)"
+	if result != expected {
+		t.Errorf("executeUpdateFile result = %q, want %q", result, expected)
+	}
+
+	// Verify file content unchanged
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+	if string(data) != "original content" {
+		t.Errorf("file content = %q, want %q", string(data), "original content")
+	}
+}
+
+func TestExecuteUpdateFileNotFound(t *testing.T) {
+	_, err := executeUpdateFile(map[string]interface{}{
+		"path":    "nonexistent.txt",
+		"content": "new content",
+	})
+
+	if err == nil {
+		t.Fatal("executeUpdateFile expected error for nonexistent file")
+	}
+}
+
+func TestExecuteGetPwd(t *testing.T) {
+	result, err := executeGetPwd(map[string]interface{}{})
+
+	if err != nil {
+		t.Fatalf("executeGetPwd error: %v", err)
+	}
+
+	if !strings.Contains(result, "Current directory:") {
+		t.Errorf("executeGetPwd result = %q, should contain 'Current directory:'", result)
+	}
+}
+
+func TestExecuteCommand(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+
+	result, err := executeCommand(map[string]interface{}{
+		"command": "pwd",
+	})
+
+	if err != nil {
+		t.Fatalf("executeCommand error: %v", err)
+	}
+
+	if !strings.Contains(result, tmpDir) {
+		t.Errorf("executeCommand result = %q, should contain %q", result, tmpDir)
+	}
+}
+
+func TestExecuteCommandNotAllowed(t *testing.T) {
+	_, err := executeCommand(map[string]interface{}{
+		"command": "rm",
+	})
+
+	if err == nil {
+		t.Fatal("executeCommand expected error for disallowed command")
+	}
+}
+
+func TestExecuteFindFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+
+	// Create some test files
+	os.WriteFile(tmpDir+"test1.txt", []byte("a"), 0644)
+	os.WriteFile(tmpDir+"test2.txt", []byte("b"), 0644)
+
+	result, err := executeFindFiles(map[string]interface{}{
+		"pattern": "*.txt",
+	})
+
+	if err != nil {
+		t.Fatalf("executeFindFiles error: %v", err)
+	}
+
+	if len(result) == 0 {
+		t.Fatal("executeFindFiles returned empty result")
+	}
+}
+
+func TestExecuteFindFilesNoMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+
+	result, err := executeFindFiles(map[string]interface{}{
+		"pattern": "*.nonexistent",
+	})
+
+	if err != nil {
+		t.Fatalf("executeFindFiles error: %v", err)
+	}
+
+	if !strings.Contains(result, "No files found") {
+		t.Errorf("executeFindFiles result = %q, should contain 'No files found'", result)
+	}
+}
+
+func TestExecuteGrepContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+
+	// Create a test file
+	testFile := "test_grep.txt"
+	os.WriteFile(testFile, []byte("hello world\nfoo bar"), 0644)
+
+	result, err := executeGrepContent(map[string]interface{}{
+		"pattern": "hello",
+		"files":   testFile,
+	})
+
+	if err != nil {
+		t.Fatalf("executeGrepContent error: %v", err)
+	}
+
+	if !strings.Contains(result, "hello") {
+		t.Errorf("executeGrepContent result = %q, should contain 'hello'", result)
+	}
+}
+
+func TestExecuteGrepContentNoMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+
+	// Create a test file
+	testFile := "test_grep2.txt"
+	os.WriteFile(testFile, []byte("hello world"), 0644)
+
+	result, err := executeGrepContent(map[string]interface{}{
+		"pattern": "xyz123",
+		"files":   testFile,
+	})
+
+	if err != nil {
+		t.Fatalf("executeGrepContent error: %v", err)
+	}
+
+	if !strings.Contains(result, "No matches found") {
+		t.Errorf("executeGrepContent result = %q, should contain 'No matches found'", result)
+	}
+}
+
+func TestExecuteTreeView(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+
+	// Create some test files
+	os.WriteFile(tmpDir+"file1.txt", []byte("a"), 0644)
+	os.Mkdir(tmpDir+"subdir", 0755)
+
+	result, err := executeTreeView(map[string]interface{}{})
+
+	if err != nil {
+		t.Fatalf("executeTreeView error: %v", err)
+	}
+
+	if len(result) == 0 {
+		t.Fatal("executeTreeView returned empty result")
+	}
+}
+
+func TestExecuteToolWithPlanMode(t *testing.T) {
+	// Test that create_file is blocked in plan mode
+	toolCall := clients.ToolCall{
+		Function: clients.ToolFunc{
+			Name: "create_file",
+			Arguments: map[string]interface{}{
+				"path":    "test.txt",
+				"content": "content",
+			},
+		},
+	}
+
+	result, err := ExecuteToolWithPlanMode(toolCall, true)
+	if err != nil {
+		t.Fatalf("ExecuteToolWithPlanMode error: %v", err)
+	}
+
+	if !strings.Contains(result, "Plan Mode") {
+		t.Errorf("ExecuteToolWithPlanMode result = %q, should contain 'Plan Mode'", result)
+	}
+}
+
+func TestExecuteToolWithPlanModeReadAllowed(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+
+	// Create a test file
+	testFile := "test_plan.txt"
+	os.WriteFile(testFile, []byte("plan test"), 0644)
+
+	// Test that read_file is allowed in plan mode
+	toolCall := clients.ToolCall{
+		Function: clients.ToolFunc{
+			Name: "read_file",
+			Arguments: map[string]interface{}{
+				"path": testFile,
+			},
+		},
+	}
+
+	result, err := ExecuteToolWithPlanMode(toolCall, true)
+	if err != nil {
+		t.Fatalf("ExecuteToolWithPlanMode error: %v", err)
+	}
+
+	if result != "plan test" {
+		t.Errorf("ExecuteToolWithPlanMode result = %q, want %q", result, "plan test")
+	}
+}
+
+func TestExecuteToolUnknown(t *testing.T) {
+	toolCall := clients.ToolCall{
+		Function: clients.ToolFunc{
+			Name: "unknown_tool",
+		},
+	}
+
+	_, err := ExecuteToolWithPlanMode(toolCall, false)
+	if err == nil {
+		t.Fatal("ExecuteToolWithPlanMode expected error for unknown tool")
+	}
+}
+
+func TestDetectProjectGo(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+
+	// Create go.mod
+	os.WriteFile("go.mod", []byte("module test"), 0644)
+
+	projectInfo := detectProject()
+	if projectInfo.Language != "go" {
+		t.Errorf("project language = %q, want %q", projectInfo.Language, "go")
+	}
+	if !projectInfo.HasConfig {
+		t.Error("project should have config")
+	}
+}
+
+func TestDetectProjectNode(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+
+	// Create package.json
+	os.WriteFile("package.json", []byte(`{"name": "test"}`), 0644)
+
+	projectInfo := detectProject()
+	if projectInfo.Language != "javascript" && projectInfo.Language != "typescript" {
+		t.Errorf("project language = %q, want javascript or typescript", projectInfo.Language)
+	}
+}
+
+func TestDetectProjectPython(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+
+	// Create requirements.txt
+	os.WriteFile("requirements.txt", []byte("flask"), 0644)
+
+	projectInfo := detectProject()
+	if projectInfo.Language != "python" {
+		t.Errorf("project language = %q, want %q", projectInfo.Language, "python")
+	}
+}
+
+func TestDetectProjectUnknown(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+
+	projectInfo := detectProject()
+	if projectInfo.Language != "unknown" {
+		t.Errorf("project language = %q, want %q", projectInfo.Language, "unknown")
+	}
+}
+
+func TestDetectTypeScriptProject(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+
+	// Create package.json and tsconfig.json
+	os.WriteFile("package.json", []byte(`{"name": "test"}`), 0644)
+	os.WriteFile("tsconfig.json", []byte(`{"compilerOptions": {}}`), 0644)
+
+	projectInfo := detectProject()
+	if projectInfo.Language != "typescript" {
+		t.Errorf("project language = %q, want %q", projectInfo.Language, "typescript")
 	}
 }

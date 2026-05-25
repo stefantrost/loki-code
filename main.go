@@ -24,6 +24,13 @@ func setupLogger(debug bool) {
 	})))
 }
 
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 func main() {
 	modelFlag := flag.String("model", "", "Model to use (default: qwen3:32b)")
 	modelShort := flag.String("m", "", "Model to use (short form)")
@@ -40,6 +47,7 @@ func main() {
 	flag.Parse()
 
 	setupLogger(*debugFlag)
+	slog.Debug("Application started", "debug_enabled", *debugFlag)
 
 	fmt.Println("Loki Code - AI Coding Agent")
 
@@ -125,6 +133,7 @@ func main() {
 		slog.Error("Error creating client", "error", err)
 		os.Exit(1)
 	}
+	client.SetTruncator(SmartTruncate)
 
 	// Detect and set context window
 	if contextWindow, err := client.DetectContextWindow(); err == nil {
@@ -160,7 +169,7 @@ func main() {
 		}
 	}()
 
-	scanner := bufio.NewScanner(os.Stdin)
+	scanner := bufio.NewScanner(uiInput)
 
 	for {
 		prompt := "\n> "
@@ -182,12 +191,16 @@ func main() {
 			continue
 		}
 
+		slog.Debug("User input received", "input_length", len(input), "input_preview", truncateString(input, 200))
+
 		if input == "exit" || input == "quit" {
+			slog.Debug("User requested exit")
 			fmt.Println("Goodbye!")
 			break
 		}
 
 		if input == "/clear" {
+			slog.Debug("Clearing context")
 			client.ClearContext()
 			fmt.Println("Context cleared!")
 			continue
@@ -210,6 +223,8 @@ func main() {
 				taskInfo = "Active"
 			}
 
+			slog.Debug("Stats requested", "tokens", tokens, "max_tokens", maxTokens, "messages", messages,
+				"mode", mode, "response_mode", responseMode, "task", taskInfo)
 			fmt.Printf("Context Stats: %d/%d tokens, %d messages | Mode: %s | Response: %s | Task: %s\n",
 				tokens, maxTokens, messages, mode, responseMode, taskInfo)
 			continue
@@ -220,6 +235,7 @@ func main() {
 				fmt.Println("Already in concise mode!")
 				continue
 			}
+			slog.Debug("Enabling concise mode")
 			client.EnableConciseMode()
 			fmt.Println("📝 Switched to concise mode - responses will be brief and to-the-point")
 			continue
@@ -230,6 +246,7 @@ func main() {
 				fmt.Println("Already in verbose mode!")
 				continue
 			}
+			slog.Debug("Disabling concise mode")
 			client.DisableConciseMode()
 			fmt.Println("📝 Switched to verbose mode - responses will include detailed explanations")
 			continue
@@ -244,12 +261,14 @@ func main() {
 			if client.IsInPlanMode() {
 				planMode = " (plan mode active)"
 			}
+			slog.Debug("Mode requested", "mode", mode, "plan_mode", client.IsInPlanMode())
 			fmt.Printf("Current response mode: %s%s\n", mode, planMode)
 			continue
 		}
 
 		if input == "/task" {
 			activeTask := client.GetActiveTask()
+			slog.Debug("Task requested", "has_active_task", activeTask != "")
 			if activeTask != "" {
 				fmt.Printf("🎯 Current task: %s\n", activeTask)
 			} else {
@@ -260,6 +279,7 @@ func main() {
 
 		if input == "/complete" {
 			activeTask := client.GetActiveTask()
+			slog.Debug("Complete task requested", "has_active_task", activeTask != "")
 			if activeTask != "" {
 				client.CompleteCurrentTask()
 				fmt.Println("✅ Task marked as complete")
@@ -272,6 +292,7 @@ func main() {
 		if strings.HasPrefix(input, "/task ") {
 			newTask := strings.TrimPrefix(input, "/task ")
 			if strings.TrimSpace(newTask) != "" {
+				slog.Debug("Setting new task", "task", newTask)
 				client.SetActiveTask(newTask)
 			} else {
 				fmt.Println("Please specify a task: /task <description>")
@@ -284,6 +305,7 @@ func main() {
 				fmt.Println("Context not ready for compacting (need 60%+ token usage)")
 				continue
 			}
+			slog.Debug("Compacting context requested")
 			fmt.Println("Compacting conversation context...")
 			if err := client.CompactContext(); err != nil {
 				slog.Error("Compacting failed", "error", err)
@@ -296,6 +318,7 @@ func main() {
 				fmt.Println("Already in plan mode!")
 				continue
 			}
+			slog.Debug("Enabling plan mode")
 			client.EnablePlanMode()
 			fmt.Println("🎯 Plan Mode Activated!")
 			fmt.Println("You can now create execution plans. Only read operations are allowed.")
@@ -308,12 +331,14 @@ func main() {
 				fmt.Println("Not in plan mode!")
 				continue
 			}
+			slog.Debug("Disabling plan mode")
 			client.DisablePlanMode()
 			fmt.Println("⚡ Execute Mode Activated!")
 			fmt.Println("All tools are now available for execution.")
 			continue
 		}
 
+		slog.Debug("Processing user message", "input_length", len(input))
 		fmt.Print("Assistant: ")
 		if err := client.StreamChat(input); err != nil {
 			slog.Error("StreamChat error", "error", err)

@@ -314,3 +314,252 @@ func TestContextManagerGetLastUserMessage(t *testing.T) {
 		t.Errorf("last user message = %q, want %q", lastUser.Content, "second message")
 	}
 }
+
+func TestContextManagerCompactSuccess(t *testing.T) {
+	provider := func() []clients.Tool {
+		return []clients.Tool{}
+	}
+
+	cm := NewContextManager(10000, provider)
+
+	// Add enough messages to allow compaction (need 60%+ token usage)
+	for i := 0; i < 20; i++ {
+		cm.AddMessage(clients.ChatMessage{Role: "user", Content: strings.Repeat("word ", 100)})
+		cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: strings.Repeat("response ", 100)})
+	}
+
+	err := cm.CompactContext(func([]clients.ChatMessage) (string, error) {
+		return "This is a summary of the conversation.", nil
+	})
+
+	if err != nil {
+		t.Fatalf("CompactContext error: %v", err)
+	}
+
+	messages := cm.GetMessages()
+	// Should have system prompt + 1 summary + recent messages
+	if len(messages) < 2 {
+		t.Errorf("expected at least 2 messages after compact, got %d", len(messages))
+	}
+}
+
+func TestContextManagerDetectUserTaskImplement(t *testing.T) {
+	provider := func() []clients.Tool {
+		return []clients.Tool{}
+	}
+
+	cm := NewContextManager(10000, provider)
+	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "implement a new feature"})
+
+	task := cm.GetActiveTask()
+	if task == nil {
+		t.Fatal("expected task to be detected")
+	}
+	if !strings.Contains(strings.ToLower(task.Goal), "implement") {
+		t.Errorf("task goal = %q, should contain 'implement'", task.Goal)
+	}
+}
+
+func TestContextManagerDetectUserTaskFix(t *testing.T) {
+	provider := func() []clients.Tool {
+		return []clients.Tool{}
+	}
+
+	cm := NewContextManager(10000, provider)
+	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "fix the bug in login"})
+
+	task := cm.GetActiveTask()
+	if task == nil {
+		t.Fatal("expected task to be detected")
+	}
+	if !strings.Contains(strings.ToLower(task.Goal), "fix") {
+		t.Errorf("task goal = %q, should contain 'fix'", task.Goal)
+	}
+}
+
+func TestContextManagerTaskHistory(t *testing.T) {
+	provider := func() []clients.Tool {
+		return []clients.Tool{}
+	}
+
+	cm := NewContextManager(10000, provider)
+	cm.SetActiveTask("first task")
+	cm.CompleteCurrentTask("first task done")
+
+	cm.SetActiveTask("second task")
+	cm.CompleteCurrentTask("second task done")
+
+	// Task history should contain completed tasks
+	if len(cm.tasks.history) != 2 {
+		t.Errorf("task history length = %d, want 2", len(cm.tasks.history))
+	}
+}
+
+func TestContextManagerSystemPromptContainsTools(t *testing.T) {
+	provider := func() []clients.Tool {
+		return []clients.Tool{
+			{
+				Type: "function",
+				Function: clients.ToolFunc{
+					Name:        "test_tool",
+					Description: "A test tool",
+				},
+			},
+		}
+	}
+
+	cm := NewContextManager(10000, provider)
+	messages := cm.GetMessages()
+
+	systemPrompt := messages[0].Content
+	if !strings.Contains(systemPrompt, "test_tool") {
+		t.Error("system prompt should contain tool schema")
+	}
+}
+
+func TestContextManagerPlanModePrompt(t *testing.T) {
+	provider := func() []clients.Tool {
+		return []clients.Tool{}
+	}
+
+	cm := NewContextManager(10000, provider)
+	cm.SetPlanMode(true)
+
+	messages := cm.GetMessages()
+	planPrompt := messages[0].Content
+
+	if !strings.Contains(planPrompt, "PLAN MODE") {
+		t.Error("plan mode prompt should contain 'PLAN MODE'")
+	}
+}
+
+func TestContextManagerConciseModeInstructions(t *testing.T) {
+	provider := func() []clients.Tool {
+		return []clients.Tool{}
+	}
+
+	cm := NewContextManager(10000, provider)
+	cm.SetConciseMode(true)
+
+	messages := cm.GetMessages()
+	systemPrompt := messages[0].Content
+
+	if !strings.Contains(systemPrompt, "CONCISE") {
+		t.Error("system prompt should contain concise mode instructions")
+	}
+}
+
+func TestContextManagerMultipleTasksSequential(t *testing.T) {
+	provider := func() []clients.Tool {
+		return []clients.Tool{}
+	}
+
+	cm := NewContextManager(10000, provider)
+
+	cm.SetActiveTask("task one")
+	task1 := cm.GetActiveTask()
+	if task1 == nil {
+		t.Fatal("expected task one")
+	}
+
+	cm.SetActiveTask("task two")
+	task2 := cm.GetActiveTask()
+	if task2 == nil {
+		t.Fatal("expected task two")
+	}
+	if task2.Goal != "task two" {
+		t.Errorf("task two goal = %q, want %q", task2.Goal, "task two")
+	}
+}
+
+func TestContextManagerClearResetsMessages(t *testing.T) {
+	provider := func() []clients.Tool {
+		return []clients.Tool{}
+	}
+
+	cm := NewContextManager(10000, provider)
+
+	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "message 1"})
+	cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: "response 1"})
+	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "message 2"})
+
+	cm.Clear()
+
+	messages := cm.GetMessages()
+	if len(messages) != 1 {
+		t.Errorf("expected 1 message after clear (system prompt), got %d", len(messages))
+	}
+}
+
+func TestContextManagerClearKeepsSystemPrompt(t *testing.T) {
+	provider := func() []clients.Tool {
+		return []clients.Tool{}
+	}
+
+	cm := NewContextManager(10000, provider)
+	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "test"})
+	cm.Clear()
+
+	messages := cm.GetMessages()
+	if messages[0].Role != "system" {
+		t.Errorf("first message role = %q, want %q", messages[0].Role, "system")
+	}
+}
+
+func TestContextManagerToolCallPreservation(t *testing.T) {
+	provider := func() []clients.Tool {
+		return []clients.Tool{}
+	}
+
+	cm := NewContextManager(10000, provider)
+
+	// Add assistant message with tool calls
+	cm.AddMessage(clients.ChatMessage{
+		Role: "assistant",
+		Content: "I'll use tools",
+		ToolCalls: []clients.ToolCall{
+			{
+				ID: "call_1",
+				Function: clients.ToolFunc{
+					Name:      "read_file",
+					Arguments: map[string]interface{}{"path": "test.txt"},
+				},
+			},
+		},
+	})
+
+	// Verify tool calls are preserved
+	messages := cm.GetMessages()
+	assistantMsg := messages[1] // Skip system prompt
+
+	if len(assistantMsg.ToolCalls) != 1 {
+		t.Errorf("expected 1 tool call, got %d", len(assistantMsg.ToolCalls))
+	}
+	if assistantMsg.ToolCalls[0].Function.Name != "read_file" {
+		t.Errorf("tool name = %q, want %q", assistantMsg.ToolCalls[0].Function.Name, "read_file")
+	}
+}
+
+func TestContextManagerTokenEstimation(t *testing.T) {
+	provider := func() []clients.Tool {
+		return []clients.Tool{}
+	}
+
+	cm := NewContextManager(10000, provider)
+
+	// Add a message with known content
+	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "hello world"})
+
+	tokens, _, _ := cm.GetStats()
+	if tokens == 0 {
+		t.Error("token count should be > 0")
+	}
+
+	// Add another message
+	cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: "hi there"})
+
+	tokens2, _, _ := cm.GetStats()
+	if tokens2 <= tokens {
+		t.Error("token count should increase after adding message")
+	}
+}

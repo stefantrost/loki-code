@@ -14,18 +14,9 @@ import (
 
 // OpenAIClient implements the LLMClient interface for OpenAI-compatible APIs
 type OpenAIClient struct {
-	baseURL          string
-	bearerToken      string
-	modelName        string
-	toolExecutor     ToolExecutor
-	toolSchemaProvider ToolSchemaProvider
-	planMode         bool
-	conciseMode      bool
-	debug            bool
-	responseActive   bool
-	interruptChan    chan struct{}
-	contextManager   ContextManager
-	httpClient       *http.Client
+	*baseClient
+	baseURL     string
+	bearerToken string
 }
 
 // OpenAI-compatible request/response structures
@@ -63,59 +54,84 @@ type OpenAIStreamResponse struct {
 // NewOpenAIClient creates a new OpenAI-compatible client
 func NewOpenAIClient(baseURL, bearerToken, modelName string, ctxMgr ContextManager, toolExec ToolExecutor, toolProvider ToolSchemaProvider) *OpenAIClient {
 	return &OpenAIClient{
-		baseURL:          baseURL,
-		bearerToken:      bearerToken,
-		modelName:        modelName,
-		toolExecutor:     toolExec,
-		toolSchemaProvider: toolProvider,
-		contextManager:   ctxMgr,
-		interruptChan:    make(chan struct{}),
-		httpClient: &http.Client{
-			Timeout: 5 * time.Minute,
+		baseClient: &baseClient{
+			modelName:          modelName,
+			toolExecutor:       toolExec,
+			toolSchemaProvider: toolProvider,
+			contextManager:     ctxMgr,
+			interruptChan:      make(chan struct{}),
+			httpClient: &http.Client{
+				Timeout: 5 * time.Minute,
+			},
 		},
+		baseURL:     baseURL,
+		bearerToken: bearerToken,
 	}
 }
 
+func (c *OpenAIClient) planMode() bool { return c.IsInPlanMode() }
+
 // StreamChat implements LLMClient interface
 func (c *OpenAIClient) StreamChat(userInput string) error {
+	slog.Debug("StreamChat started", "user_input_length", len(userInput), "user_input_preview", truncateString(userInput, 200))
+
 	userMessage := ChatMessage{
 		Role:    "user",
 		Content: userInput,
 	}
 	c.contextManager.AddMessage(userMessage)
+	_, msgs, _ := c.contextManager.GetStats()
+	slog.Debug("User message added to context", "total_messages", msgs)
 
 	messages := c.contextManager.GetMessages()
+	slog.Debug("Retrieved messages for API call", "message_count", len(messages))
 	return c.StreamChatWithHistory(messages)
 }
 
 // StreamChatWithHistory implements LLMClient interface
 func (c *OpenAIClient) StreamChatWithHistory(messages []ChatMessage) error {
 	currentTokens, messageCount, maxTokens := c.contextManager.GetStats()
+	slog.Debug("Starting API request", "model", c.modelName, "message_count", len(messages),
+		"current_tokens", currentTokens, "max_tokens", maxTokens)
 	fmt.Printf("[Context: %d/%d tokens, %d messages]\n", currentTokens, maxTokens, messageCount-1)
 
-	c.debugLog("Sending %d messages to model %s", len(messages), c.modelName)
+	slog.Debug("Building request with all messages", "message_count", len(messages))
 	for i, msg := range messages {
-		c.debugLog("Message %d: role=%s, content_length=%d, tool_calls=%d",
-			i+1, msg.Role, len(msg.Content), len(msg.ToolCalls))
-		if c.debug && len(msg.Content) > 0 {
-			c.debugLog("  Content: %s", msg.Content)
+		slog.Debug("Message in request", "index", i, "role", msg.Role, "content_length", len(msg.Content),
+			"tool_calls_count", len(msg.ToolCalls))
+		if msg.Role == "user" || msg.Role == "assistant" {
+			slog.Debug("Message content preview", "index", i, "role", msg.Role, "preview", truncateString(msg.Content, 300))
 		}
+		if len(msg.ToolCalls) > 0 {
+			slog.Debug("Tool calls in message", "index", i, "tool_calls", msg.ToolCalls)
+		}
+	}
+
+	tools := c.toolSchemaProvider()
+	slog.Debug("Retrieved tool schemas", "tool_count", len(tools))
+	for _, tool := range tools {
+		slog.Debug("Tool schema", "tool_name", tool.Function.Name, "tool_description", truncateString(tool.Function.Description, 200),
+			"arguments", tool.Function.Arguments)
 	}
 
 	request := OpenAIRequest{
 		Model:    c.modelName,
 		Messages: messages,
 		Stream:   true,
-		Tools:    c.toolSchemaProvider(),
+		Tools:    tools,
 	}
 
 	jsonData, err := json.Marshal(request)
 	if err != nil {
+		slog.Error("Failed to marshal request", "error", err)
 		return fmt.Errorf("error marshaling request: %v", err)
 	}
 
+	slog.Debug("Request JSON size", "bytes", len(jsonData))
+
 	req, err := http.NewRequest("POST", c.baseURL+"/chat/completions", bytes.NewBuffer(jsonData))
 	if err != nil {
+		slog.Error("Failed to create HTTP request", "error", err)
 		return fmt.Errorf("error creating request: %v", err)
 	}
 
@@ -124,28 +140,42 @@ func (c *OpenAIClient) StreamChatWithHistory(messages []ChatMessage) error {
 
 	if c.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
+		slog.Debug("Bearer token set for authentication")
+	} else {
+		slog.Debug("No bearer token configured")
 	}
 
+	slog.Debug("Sending HTTP POST request", "url", c.baseURL+"/chat/completions")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		slog.Error("HTTP request failed", "error", err)
 		return fmt.Errorf("error making request: %v", err)
 	}
 	defer resp.Body.Close()
+
+	slog.Debug("Received HTTP response", "status", resp.Status, "status_code", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
 		return c.handleHTTPError(resp)
 	}
 
-	c.responseActive = true
-	defer func() { c.responseActive = false }()
+	slog.Debug("HTTP request successful, starting SSE stream")
+	c.responseActive.Store(true)
+	defer func() {
+		c.responseActive.Store(false)
+		slog.Debug("Response stream ended")
+	}()
 
 	scanner := bufio.NewScanner(resp.Body)
 	var currentMessage ChatMessage
 	var hasToolCalls bool
+	var totalChunks int
 
 	for scanner.Scan() {
+		totalChunks++
 		select {
 		case <-c.interruptChan:
+			slog.Debug("Interrupt received during streaming")
 			fmt.Println("\n[Interrupted]")
 			return nil
 		default:
@@ -163,137 +193,78 @@ func (c *OpenAIClient) StreamChatWithHistory(messages []ChatMessage) error {
 		jsonData := strings.TrimPrefix(line, "data: ")
 
 		if jsonData == "[DONE]" {
+			slog.Debug("Received SSE [DONE] marker")
 			break
 		}
 
 		var streamResponse OpenAIStreamResponse
-			if err := json.Unmarshal([]byte(jsonData), &streamResponse); err != nil {
-				c.debugLog("Failed to parse response line: %q, error: %v", jsonData, err)
-				if c.debug {
-					slog.Error("Stream parse error", "json", jsonData, "error", err)
-				}
-				continue
+		if err := json.Unmarshal([]byte(jsonData), &streamResponse); err != nil {
+			slog.Debug("Failed to parse SSE line", "error", err, "line_preview", truncateString(jsonData, 200))
+			c.debugLog("Failed to parse response line: %q, error: %v", jsonData, err)
+			if c.debug {
+				slog.Error("Stream parse error", "json", jsonData, "error", err)
 			}
+			continue
+		}
+
+		slog.Debug("Parsed SSE chunk", "choices_count", len(streamResponse.Choices), "finish_reasons",
+			func() []string {
+				reasons := make([]string, len(streamResponse.Choices))
+				for i, c := range streamResponse.Choices {
+					reasons[i] = c.FinishReason
+				}
+				return reasons
+			}())
 
 		for _, choice := range streamResponse.Choices {
 			if choice.Delta.Content != "" {
+				slog.Debug("Streaming content chunk", "content", choice.Delta.Content)
 				fmt.Print(choice.Delta.Content)
 				currentMessage.Content += choice.Delta.Content
 				c.debugLog("Streaming chunk received: %q", choice.Delta.Content)
 			}
 
 			if len(choice.Delta.ToolCalls) > 0 {
-				currentMessage.ToolCalls = append(currentMessage.ToolCalls, choice.Delta.ToolCalls...)
+				slog.Debug("Tool calls detected in SSE chunk", "tool_calls", choice.Delta.ToolCalls)
+				currentMessage.ToolCalls = mergeToolCallDeltas(currentMessage.ToolCalls, choice.Delta.ToolCalls)
 				hasToolCalls = true
+				for _, tc := range choice.Delta.ToolCalls {
+					slog.Debug("Tool call details", "tool_id", tc.ID, "tool_name", tc.Function.Name,
+						"tool_args", tc.Function.Arguments)
+				}
 			}
 
 			if choice.FinishReason == "stop" || choice.FinishReason == "tool_calls" {
+				slog.Debug("Streaming complete", "finish_reason", choice.FinishReason, "total_chunks", totalChunks,
+					"final_content_length", len(currentMessage.Content), "has_tool_calls", hasToolCalls,
+					"tool_calls_count", len(currentMessage.ToolCalls))
 				fmt.Println()
 				currentMessage.Role = "assistant"
 				c.debugLog("Streaming complete. Final message content: %q", currentMessage.Content)
 
 				if hasToolCalls {
+					slog.Debug("Tool calls detected, processing them")
 					c.contextManager.AddMessage(currentMessage)
 					c.debugLog("Found %d tool calls, processing...", len(currentMessage.ToolCalls))
-					return c.handleToolCalls(currentMessage)
+					return c.handleToolCalls(c, currentMessage)
 				}
 
+				slog.Debug("No tool calls, adding assistant message to context")
 				c.contextManager.AddMessage(currentMessage)
 				return nil
 			}
 		}
 	}
 
+	slog.Debug("SSE stream processing finished", "total_chunks_processed", totalChunks, "has_tool_calls", hasToolCalls)
+
 	if !hasToolCalls {
+		slog.Debug("No tool calls found, adding assistant message to context")
 		currentMessage.Role = "assistant"
 		c.contextManager.AddMessage(currentMessage)
 	}
 
 	return nil
-}
-
-func (c *OpenAIClient) handleToolCalls(assistantMessage ChatMessage) error {
-	for _, toolCall := range assistantMessage.ToolCalls {
-		c.debugLog("Processing tool call: %s with function %s", toolCall.ID, toolCall.Function.Name)
-
-		fmt.Printf("🔧 Executing tools...\n")
-		fmt.Printf("Calling %s...\n", toolCall.Function.Name)
-
-		result, err := c.toolExecutor(toolCall, c.planMode)
-		if err != nil {
-			result = fmt.Sprintf("Error: %v", err)
-		}
-
-		result = c.truncateToolResult(result, toolCall.Function.Name)
-
-		c.debugLog("Tool %s result length: %d characters", toolCall.Function.Name, len(result))
-
-		fmt.Printf("✓ %s completed\n", toolCall.Function.Name)
-
-		toolMessage := ChatMessage{
-			Role:    "tool",
-			Content: result,
-		}
-		c.contextManager.AddMessage(toolMessage)
-	}
-
-	messages := c.contextManager.GetMessages()
-	return c.StreamChatWithHistory(messages)
-}
-
-func (c *OpenAIClient) truncateToolResult(result, toolName string) string {
-	const maxLength = 5000
-
-	if len(result) <= maxLength {
-		return result
-	}
-
-	switch toolName {
-	case "read_file":
-		truncated := result[:maxLength-100]
-		truncated += fmt.Sprintf("\n\n... (file content truncated - showing first %d characters of %d total)",
-			maxLength-100, len(result))
-		return truncated
-
-	case "list_files", "find_files":
-		lines := strings.Split(result, "\n")
-		var truncated []string
-		currentLength := 0
-
-		for _, line := range lines {
-			if currentLength+len(line)+1 > maxLength-100 {
-				break
-			}
-			truncated = append(truncated, line)
-			currentLength += len(line) + 1
-		}
-
-		truncatedResult := strings.Join(truncated, "\n")
-		if len(truncated) < len(lines) {
-			truncatedResult += fmt.Sprintf("\n... (output truncated - showing %d of %d lines)",
-				len(truncated), len(lines))
-		}
-		return truncatedResult
-
-	default:
-		truncated := result[:maxLength-50]
-		truncated += fmt.Sprintf("... (truncated at %d characters)", maxLength-50)
-		return truncated
-	}
-}
-
-// LLMClient interface implementations
-
-func (c *OpenAIClient) ClearContext() {
-	c.contextManager.Clear()
-}
-
-func (c *OpenAIClient) GetStats() (int, int, int) {
-	return c.contextManager.GetStats()
-}
-
-func (c *OpenAIClient) CanCompact() bool {
-	return c.contextManager.CanCompact()
 }
 
 func (c *OpenAIClient) CompactContext() error {
@@ -364,60 +335,6 @@ Keep the summary under 200 words while preserving essential context.`
 	return apiResponse.Choices[0].Message.Content, nil
 }
 
-func (c *OpenAIClient) EnablePlanMode() {
-	c.planMode = true
-	c.contextManager.SetPlanMode(true)
-}
-
-func (c *OpenAIClient) DisablePlanMode() {
-	c.planMode = false
-	c.contextManager.SetPlanMode(false)
-}
-
-func (c *OpenAIClient) IsInPlanMode() bool {
-	return c.planMode
-}
-
-func (c *OpenAIClient) EnableConciseMode() {
-	c.conciseMode = true
-	c.contextManager.SetConciseMode(true)
-}
-
-func (c *OpenAIClient) DisableConciseMode() {
-	c.conciseMode = false
-	c.contextManager.SetConciseMode(false)
-}
-
-func (c *OpenAIClient) IsInConciseMode() bool {
-	return c.conciseMode
-}
-
-func (c *OpenAIClient) SetActiveTask(task string) {
-	c.contextManager.SetActiveTask(task)
-}
-
-func (c *OpenAIClient) GetActiveTask() string {
-	if task := c.contextManager.GetActiveTask(); task != nil {
-		return task.Goal
-	}
-	return ""
-}
-
-func (c *OpenAIClient) CompleteCurrentTask() {
-	c.contextManager.CompleteCurrentTask("")
-}
-
-func (c *OpenAIClient) Interrupt() {
-	select {
-	case c.interruptChan <- struct{}{}:
-	default:
-	}
-}
-
-func (c *OpenAIClient) IsResponseActive() bool {
-	return c.responseActive
-}
-
 func (c *OpenAIClient) DetectContextWindow() (int, error) {
 	switch strings.ToLower(c.modelName) {
 	case "gpt-4", "gpt-4-turbo":
@@ -428,19 +345,6 @@ func (c *OpenAIClient) DetectContextWindow() (int, error) {
 		return 1000000, nil
 	default:
 		return 16000, nil
-	}
-}
-
-func (c *OpenAIClient) SetDebug(enabled bool) {
-	c.debug = enabled
-	if enabled {
-		slog.Info("Debug logging enabled for OpenAI client")
-	}
-}
-
-func (c *OpenAIClient) debugLog(format string, args ...interface{}) {
-	if c.debug {
-		slog.Debug(fmt.Sprintf(format, args...))
 	}
 }
 

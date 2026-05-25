@@ -3,13 +3,48 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"loki-code/clients"
 	"strings"
-	"time"
+	"sync"
 )
 
-// ContextManager handles conversation context with token management
+// Context-management tuning constants. Token estimation is a heuristic
+// (chars/4 with a per-message and per-tool overhead nudge); these multipliers
+// were picked empirically against qwen3:32b and gpt-4-class tokenizers and
+// will drift on tool-call-heavy turns. Treat them as approximate.
+const (
+	// defaultRetainCount is how many recent messages smartTrim aims to keep.
+	defaultRetainCount = 16
+	// trimSafetyMargin extends retainCount when choosing a safe cutoff to
+	// avoid slicing in the middle of a tool-call/result pair.
+	trimSafetyMargin = 4
+	// toolMessageTokenInflation accounts for the wrapping JSON/tool-result
+	// metadata that providers add around the raw content we count.
+	toolMessageTokenInflation = 1.2
+	// perMessageOverheadChars approximates per-message JSON envelope size
+	// (role, separators, etc.) before dividing by charsPerToken.
+	perMessageOverheadChars = 50
+	// charsPerToken is the rough character-to-token ratio for English+code.
+	charsPerToken = 4
+	// tokenSafetyFactor inflates the final estimate to leave headroom for
+	// tokenizer differences across models.
+	tokenSafetyFactor = 1.15
+	// compactionThresholdRatio gates /compact: at least this fraction of
+	// maxTokens must be in use before compaction is allowed.
+	compactionThresholdRatio = 0.6
+	// compactionRecentRatio controls how much of maxTokens to keep verbatim
+	// at the tail of a compaction (the rest gets summarized).
+	compactionRecentRatio = 0.25
+	// compactionMinMessages is the minimum message count before /compact will run.
+	compactionMinMessages = 6
+)
+
+// ContextManager handles conversation context with token management.
+// All public methods are safe for concurrent use; internal helpers ending in
+// "Locked" assume the caller already holds mu.
 type ContextManager struct {
+	mu             sync.RWMutex
 	messages       []clients.ChatMessage
 	maxTokens      int
 	systemPrompt   clients.ChatMessage
@@ -17,8 +52,7 @@ type ContextManager struct {
 	retainCount    int
 	planMode       bool
 	conciseMode    bool
-	activeTask     *clients.UserTask
-	taskHistory    []clients.UserTask
+	tasks          taskTracker
 }
 
 func NewContextManager(maxTokens int, toolProvider clients.ToolSchemaProvider) *ContextManager {
@@ -125,79 +159,111 @@ CRITICAL: You are in PLAN MODE - analyze and plan thoroughly, but don't make act
 		maxTokens:      maxTokens,
 		systemPrompt:   systemPrompt,
 		planModePrompt: planModePrompt,
-		retainCount:    16,
+		retainCount:    defaultRetainCount,
 		planMode:       false,
 	}
 }
 
 func (cm *ContextManager) AddMessage(message clients.ChatMessage) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	slog.Debug("AddMessage called", "role", message.Role, "content_length", len(message.Content),
+		"tool_calls_count", len(message.ToolCalls), "messages_before", len(cm.messages))
+
 	if message.Role == "user" {
-		detectedTask := cm.detectUserTask(message)
-		if detectedTask != nil {
-			if cm.activeTask == nil || cm.activeTask.Status != "active" {
-				cm.activeTask = detectedTask
+		if detectedTask := detectTaskFromUser(message); detectedTask != nil {
+			slog.Debug("Task detected from user message", "task_goal", detectedTask.Goal)
+			if cm.tasks.active == nil || cm.tasks.active.Status != "active" {
+				cm.tasks.active = detectedTask
+				slog.Info("Active task set", "task_goal", detectedTask.Goal)
 				fmt.Printf("🎯 New task detected: %s\n", detectedTask.Goal)
 			}
 		}
 	}
 
 	cm.messages = append(cm.messages, message)
+	slog.Debug("Message appended to context", "messages_after", len(cm.messages))
 
 	// Check for task completion in assistant messages
 	if message.Role == "assistant" {
-		cm.checkTaskCompletion(message)
+		cm.checkTaskCompletionLocked(message)
 	}
 
 	cm.trimIfNeeded()
 }
 
 func (cm *ContextManager) GetMessages() []clients.ChatMessage {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.getMessagesLocked()
+}
+
+func (cm *ContextManager) getMessagesLocked() []clients.ChatMessage {
+	slog.Debug("GetMessages called", "plan_mode", cm.planMode, "concise_mode", cm.conciseMode,
+		"active_task", cm.tasks.active != nil, "messages_count", len(cm.messages))
+
 	var activePrompt clients.ChatMessage
 	if cm.planMode {
+		slog.Debug("Using plan mode prompt")
 		activePrompt = cm.planModePrompt
 	} else {
+		slog.Debug("Using system prompt")
 		activePrompt = cm.systemPrompt
 	}
 
-	if cm.activeTask != nil && cm.activeTask.Status == "active" {
+	if cm.tasks.active != nil && cm.tasks.active.Status == "active" {
+		slog.Debug("Enhancing prompt with active task", "task_goal", cm.tasks.active.Goal)
 		activePrompt = cm.enhancePromptWithTask(activePrompt)
 	}
 
 	if cm.conciseMode {
+		slog.Debug("Adding concise mode instructions")
 		activePrompt = cm.addConciseModeInstructions(activePrompt)
 	}
 
 	result := []clients.ChatMessage{activePrompt}
 	result = append(result, cm.messages...)
+	slog.Debug("Messages retrieved", "total_count", len(result), "prompt_length", len(activePrompt.Content))
 	return result
 }
 
 func (cm *ContextManager) GetSystemPrompt() clients.ChatMessage {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
 	return cm.systemPrompt
 }
 
 func (cm *ContextManager) trimIfNeeded() {
-	allMessages := cm.GetMessages()
+	slog.Debug("trimIfNeeded called", "current_messages", len(cm.messages), "max_tokens", cm.maxTokens)
+
+	allMessages := cm.getMessagesLocked()
 	currentTokens := cm.estimateTokens(allMessages)
+	slog.Debug("Token estimation completed", "current_tokens", currentTokens, "max_tokens", cm.maxTokens)
 
 	if currentTokens <= cm.maxTokens {
+		slog.Debug("Token count within limits, no trimming needed", "current_tokens", currentTokens)
 		return
 	}
 
-	if cm.HasToolCallsInProgress() {
+	if cm.hasToolCallsInProgressLocked() {
+		slog.Warn("Context limit reached but tool calls in progress, delaying trim",
+			"current_tokens", currentTokens, "max_tokens", cm.maxTokens)
 		fmt.Printf("\n🔧 Context limit reached (%d/%d tokens) but tool calls in progress - delaying trim\n",
 			currentTokens, cm.maxTokens)
 		return
 	}
 
 	beforeMessageCount := len(cm.messages)
+	slog.Warn("Context limit exceeded, initiating trim", "current_tokens", currentTokens,
+		"max_tokens", cm.maxTokens, "message_count", beforeMessageCount)
 	fmt.Printf("\n⚠️ Context approaching limit (%d/%d tokens, %d messages), trimming...\n",
 		currentTokens, cm.maxTokens, beforeMessageCount)
 
 	cm.smartTrim()
 
 	afterMessageCount := len(cm.messages)
-	trimmedTokens := cm.estimateTokens(cm.GetMessages())
+	trimmedTokens := cm.estimateTokens(cm.getMessagesLocked())
 	fmt.Printf("✓ Context trimmed to %d tokens (%d messages, removed %d messages)\n",
 		trimmedTokens, afterMessageCount, beforeMessageCount-afterMessageCount)
 }
@@ -207,7 +273,7 @@ func (cm *ContextManager) smartTrim() {
 		return
 	}
 
-	conservativeRetainCount := cm.retainCount + 4
+	conservativeRetainCount := cm.retainCount + trimSafetyMargin
 	if len(cm.messages) <= conservativeRetainCount {
 		return
 	}
@@ -243,7 +309,7 @@ func (cm *ContextManager) estimateTokens(messages []clients.ChatMessage) int {
 		contentChars := len(msg.Content)
 
 		if msg.Role == "tool" {
-			totalChars += int(float64(contentChars) * 1.2)
+			totalChars += int(float64(contentChars) * toolMessageTokenInflation)
 		} else {
 			totalChars += contentChars
 		}
@@ -256,38 +322,53 @@ func (cm *ContextManager) estimateTokens(messages []clients.ChatMessage) int {
 			}
 		}
 
-		totalChars += 50
+		totalChars += perMessageOverheadChars
 	}
 
-	estimatedTokens := totalChars / 4
-	return int(float64(estimatedTokens) * 1.15)
+	estimatedTokens := totalChars / charsPerToken
+	return int(float64(estimatedTokens) * tokenSafetyFactor)
 }
 
 func (cm *ContextManager) GetStats() (int, int, int) {
-	currentTokens := cm.estimateTokens(cm.GetMessages())
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	currentTokens := cm.estimateTokens(cm.getMessagesLocked())
 	messageCount := len(cm.messages)
 	return currentTokens, messageCount, cm.maxTokens
 }
 
 func (cm *ContextManager) SetMaxTokens(maxTokens int) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
 	cm.maxTokens = maxTokens
 	cm.trimIfNeeded()
 }
 
 func (cm *ContextManager) Clear() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
 	cm.messages = []clients.ChatMessage{}
 }
 
 func (cm *ContextManager) GetLastUserMessage() *clients.ChatMessage {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
 	for i := len(cm.messages) - 1; i >= 0; i-- {
 		if cm.messages[i].Role == "user" {
-			return &cm.messages[i]
+			msg := cm.messages[i]
+			return &msg
 		}
 	}
 	return nil
 }
 
 func (cm *ContextManager) HasToolCallsInProgress() bool {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.hasToolCallsInProgressLocked()
+}
+
+func (cm *ContextManager) hasToolCallsInProgressLocked() bool {
 	for i := len(cm.messages) - 1; i >= 0; i-- {
 		msg := cm.messages[i]
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
@@ -306,26 +387,35 @@ func (cm *ContextManager) HasToolCallsInProgress() bool {
 }
 
 func (cm *ContextManager) CanCompact() bool {
-	currentTokens := cm.estimateTokens(cm.GetMessages())
-	threshold := int(float64(cm.maxTokens) * 0.6)
-	minMessages := 6
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.canCompactLocked()
+}
 
-	return currentTokens >= threshold && len(cm.messages) >= minMessages
+func (cm *ContextManager) canCompactLocked() bool {
+	currentTokens := cm.estimateTokens(cm.getMessagesLocked())
+	threshold := int(float64(cm.maxTokens) * compactionThresholdRatio)
+	return currentTokens >= threshold && len(cm.messages) >= compactionMinMessages
 }
 
 func (cm *ContextManager) CompactContext(compactFunc clients.CompactFunc) error {
-	currentTokens := cm.estimateTokens(cm.GetMessages())
-	if !cm.CanCompact() {
-		threshold := int(float64(cm.maxTokens) * 0.6)
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	currentTokens := cm.estimateTokens(cm.getMessagesLocked())
+	if !cm.canCompactLocked() {
+		threshold := int(float64(cm.maxTokens) * compactionThresholdRatio)
 		return fmt.Errorf("context not ready for compacting (using %d/%d tokens, need %d+ tokens)",
 			currentTokens, cm.maxTokens, threshold)
 	}
 
-	if cm.HasToolCallsInProgress() {
+	if cm.hasToolCallsInProgressLocked() {
 		return fmt.Errorf("cannot compact while tool calls are in progress")
 	}
 
-	targetRecentTokens := int(float64(cm.maxTokens) * 0.25)
+	targetRecentTokens := int(float64(cm.maxTokens) * compactionRecentRatio)
+	slog.Debug("Starting context compaction", "total_messages", len(cm.messages), "max_tokens", cm.maxTokens,
+		"target_recent_tokens", targetRecentTokens)
 
 	recentMessages := []clients.ChatMessage{}
 
@@ -341,17 +431,26 @@ func (cm *ContextManager) CompactContext(compactFunc clients.CompactFunc) error 
 	}
 
 	compactEndIndex := len(cm.messages) - len(recentMessages)
+	slog.Debug("Calculated compaction boundaries", "compact_end_index", compactEndIndex,
+		"recent_messages_count", len(recentMessages), "messages_to_compact", compactEndIndex)
+
 	if compactEndIndex <= 1 {
+		slog.Warn("Not enough content to compact", "recent_messages", len(recentMessages))
 		return fmt.Errorf("not enough content to compact (would keep %d recent messages)", len(recentMessages))
 	}
 
 	messagesToCompact := cm.messages[:compactEndIndex]
+	slog.Debug("Messages selected for compaction", "count", len(messagesToCompact))
 
 	fmt.Println("🔄 Generating conversation summary...")
+	slog.Debug("Calling compact function to generate summary")
 	summary, err := compactFunc(messagesToCompact)
 	if err != nil {
+		slog.Error("Failed to generate summary", "error", err)
 		return fmt.Errorf("failed to generate summary: %v", err)
 	}
+
+	slog.Debug("Summary generated", "summary_length", len(summary))
 
 	summaryMessage := clients.ChatMessage{
 		Role:    "assistant",
@@ -359,13 +458,17 @@ func (cm *ContextManager) CompactContext(compactFunc clients.CompactFunc) error 
 	}
 
 	oldTokens := cm.estimateTokens(append([]clients.ChatMessage{cm.systemPrompt}, cm.messages...))
+	slog.Debug("Old token count calculated", "old_tokens", oldTokens)
 
 	cm.messages = append([]clients.ChatMessage{summaryMessage}, recentMessages...)
 
-	newTokens := cm.estimateTokens(cm.GetMessages())
+	newTokens := cm.estimateTokens(cm.getMessagesLocked())
 	savedTokens := oldTokens - newTokens
 	compactedMessageCount := len(messagesToCompact)
 	keptMessageCount := len(recentMessages)
+
+	slog.Info("Context compaction completed", "old_tokens", oldTokens, "new_tokens", newTokens,
+		"saved_tokens", savedTokens, "compacted_messages", compactedMessageCount, "kept_messages", keptMessageCount)
 
 	fmt.Printf("✓ Context compacted: %d → %d tokens (saved %d tokens)\n",
 		oldTokens, newTokens, savedTokens)
@@ -376,18 +479,26 @@ func (cm *ContextManager) CompactContext(compactFunc clients.CompactFunc) error 
 }
 
 func (cm *ContextManager) SetPlanMode(enabled bool) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
 	cm.planMode = enabled
 }
 
 func (cm *ContextManager) IsInPlanMode() bool {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
 	return cm.planMode
 }
 
 func (cm *ContextManager) SetConciseMode(enabled bool) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
 	cm.conciseMode = enabled
 }
 
 func (cm *ContextManager) IsInConciseMode() bool {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
 	return cm.conciseMode
 }
 
@@ -407,106 +518,30 @@ RESPONSE MODE: CONCISE
 	return modifiedPrompt
 }
 
-// Task management functions
-func generateTaskID() string {
-	return fmt.Sprintf("task_%d", time.Now().Unix())
-}
-
-func (cm *ContextManager) detectUserTask(message clients.ChatMessage) *clients.UserTask {
-	if message.Role != "user" {
-		return nil
-	}
-
-	content := strings.ToLower(message.Content)
-
-	significantKeywords := []string{
-		"implement", "add", "create", "build", "make", "write",
-		"fix", "debug", "solve", "resolve", "repair",
-		"refactor", "improve", "optimize", "enhance", "update",
-		"analyze", "review", "explain", "understand", "find",
-		"remove", "delete", "change", "modify", "replace",
-	}
-
-	hasSignificantKeyword := false
-	for _, keyword := range significantKeywords {
-		if strings.Contains(content, keyword) {
-			hasSignificantKeyword = true
-			break
-		}
-	}
-
-	taskPatterns := []string{
-		"help me", "can you", "i want", "i need", "could you",
-		"let's", "how to", "what's wrong", "why is",
-	}
-
-	hasTaskPattern := false
-	for _, pattern := range taskPatterns {
-		if strings.Contains(content, pattern) {
-			hasTaskPattern = true
-			break
-		}
-	}
-
-	simplePatterns := []string{
-		"what is", "who is", "when is", "where is",
-		"/", "exit", "quit", "help", "status",
-	}
-
-	isSimple := false
-	for _, pattern := range simplePatterns {
-		if strings.Contains(content, pattern) {
-			isSimple = true
-			break
-		}
-	}
-
-	if (hasSignificantKeyword || hasTaskPattern) && !isSimple && len(message.Content) > 10 {
-		goal := message.Content
-		if len(goal) > 200 {
-			goal = goal[:200] + "..."
-		}
-
-		return &clients.UserTask{
-			ID:        generateTaskID(),
-			Goal:      goal,
-			Context:   "",
-			CreatedAt: time.Now(),
-			Status:    "active",
-			SubTasks:  []string{},
-		}
-	}
-
-	return nil
-}
-
 func (cm *ContextManager) SetActiveTask(goal string) {
-	cm.activeTask = &clients.UserTask{
-		ID:        generateTaskID(),
-		Goal:      goal,
-		Context:   "",
-		CreatedAt: time.Now(),
-		Status:    "active",
-		SubTasks:  []string{},
-	}
-	fmt.Printf("🎯 Active task set: %s\n", goal)
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.tasks.set(goal)
 }
 
 func (cm *ContextManager) GetActiveTask() *clients.UserTask {
-	return cm.activeTask
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.tasks.get()
 }
 
 func (cm *ContextManager) CompleteCurrentTask(summary string) {
-	if cm.activeTask != nil && cm.activeTask.Status == "active" {
-		cm.activeTask.Status = "completed"
-		cm.taskHistory = append(cm.taskHistory, *cm.activeTask)
-		fmt.Printf("✅ Task completed: %s\n", summary)
-		cm.activeTask = nil
-	}
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.completeCurrentTaskLocked(summary)
+}
+
+func (cm *ContextManager) completeCurrentTaskLocked(summary string) {
+	cm.tasks.complete(summary)
 }
 
 func (cm *ContextManager) enhancePromptWithTask(prompt clients.ChatMessage) clients.ChatMessage {
-	if cm.activeTask == nil || cm.activeTask.Status != "active" {
+	if cm.tasks.active == nil || cm.tasks.active.Status != "active" {
 		return prompt
 	}
 
@@ -526,47 +561,22 @@ CRITICAL TASK REQUIREMENTS:
 - Stay focused on delivering what was originally requested
 
 When you believe this task is fully completed, end your response with "TASK COMPLETED: [brief summary]"`,
-		cm.activeTask.Goal,
-		cm.activeTask.CreatedAt.Format("15:04:05"),
-		cm.activeTask.Status)
+		cm.tasks.active.Goal,
+		cm.tasks.active.CreatedAt.Format("15:04:05"),
+		cm.tasks.active.Status)
 
 	enhanced := prompt
 	enhanced.Content = prompt.Content + taskContext
 	return enhanced
 }
 
-func (cm *ContextManager) checkTaskCompletion(assistantMessage clients.ChatMessage) {
-	if cm.activeTask == nil || cm.activeTask.Status != "active" {
+func (cm *ContextManager) checkTaskCompletionLocked(assistantMessage clients.ChatMessage) {
+	if cm.tasks.active == nil || cm.tasks.active.Status != "active" {
 		return
 	}
-
-	content := strings.ToLower(assistantMessage.Content)
-
-	completionPhrases := []string{
-		"task completed",
-		"implementation complete",
-		"implementation is complete",
-		"task is done",
-		"task finished",
-		"successfully completed",
-		"implementation finished",
-		"summary complete",
-		"analysis complete",
-		"here's the summary",
-		"summary of the website",
-		"summary of the content",
-		"analysis of the",
-		"based on this content",
-		"the summary you requested",
-		"analysis you asked for",
-	}
-
-	for _, phrase := range completionPhrases {
-		if strings.Contains(content, phrase) {
-			summary := cm.extractCompletionSummary(assistantMessage.Content)
-			cm.CompleteCurrentTask(summary)
-			return
-		}
+	if detectCompletionPhrase(assistantMessage.Content) {
+		summary := cm.extractCompletionSummary(assistantMessage.Content)
+		cm.completeCurrentTaskLocked(summary)
 	}
 }
 
@@ -584,8 +594,8 @@ func (cm *ContextManager) extractCompletionSummary(content string) string {
 		}
 	}
 
-	if cm.activeTask != nil {
-		return cm.activeTask.Goal
+	if cm.tasks.active != nil {
+		return cm.tasks.active.Goal
 	}
 
 	return "Task completed"

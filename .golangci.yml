@@ -1,0 +1,53 @@
+# golangci-lint configuration for loki-code.
+# See the architecture quality plan for rationale.
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - staticcheck   # supersedes gosimple/deadcode/varcheck/structcheck
+    - errcheck      # flag unchecked errors
+    - govet         # standard vet checks
+    - ineffassign   # unused assignments
+    - unused        # unused funcs/vars/types
+    - gosec         # security smells
+    - gocyclo       # cyclomatic complexity
+    - gocognit      # cognitive complexity
+    - misspell
+
+linters-settings:
+  gocyclo:
+    min-complexity: 15
+  gocognit:
+    min-complexity: 20
+  errcheck:
+    # Don't complain about ignored errors in deferred close/cleanup or fmt.Print*.
+    exclude-functions:
+      - (io.Closer).Close
+      - os.Chdir
+      - fmt.Print
+      - fmt.Println
+      - fmt.Printf
+      - fmt.Fprint
+      - fmt.Fprintln
+      - fmt.Fprintf
+  gosec:
+    # G204 (subprocess from variable) trips on every exec.Command call; the
+    # tools.go whitelist + path validation are the real defense. G304 (file
+    # inclusion from variable) trips on every read_file/update_file call; same.
+    excludes:
+      - G204
+      - G304
+
+issues:
+  exclude-rules:
+    # Tests routinely use long table-driven cases and don't need complexity gates.
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - gocognit
+        - errcheck
+        - gosec
