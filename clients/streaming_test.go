@@ -41,6 +41,32 @@ func TestMergeToolCallDeltas_DistinctIDsKeptSeparate(t *testing.T) {
 	}
 }
 
+func TestMergeToolCallDeltas_IndexBasedContinuation(t *testing.T) {
+	existing := []ToolCall{{ID: "a", Index: 0, Function: ToolFunc{Name: "read_file"}}}
+	// Continuation fragment: no ID, same index as existing call.
+	delta := []ToolCall{{Index: 0, Function: ToolFunc{Arguments: map[string]interface{}{"path": "/tmp"}}}}
+	got := mergeToolCallDeltas(existing, delta)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 merged call, got %d", len(got))
+	}
+	if got[0].Function.Arguments["path"] != "/tmp" {
+		t.Errorf("index-based merge failed: %+v", got[0].Function.Arguments)
+	}
+}
+
+func TestMergeToolCallDeltas_IndexBasedNewCall(t *testing.T) {
+	existing := []ToolCall{{ID: "a", Index: 0, Function: ToolFunc{Name: "read_file"}}}
+	// No ID, different index: should be appended as a new call.
+	delta := []ToolCall{{Index: 1, Function: ToolFunc{Name: "list_files"}}}
+	got := mergeToolCallDeltas(existing, delta)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(got))
+	}
+	if got[1].Function.Name != "list_files" {
+		t.Errorf("new index-based call not appended: %+v", got[1])
+	}
+}
+
 func TestTruncateToolResult_ReadFile(t *testing.T) {
 	long := make([]byte, 6000)
 	for i := range long {

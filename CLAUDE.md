@@ -27,6 +27,12 @@ make start-ollama | make stop-ollama | make check-ollama | make pull-model
 go test ./...
 go test -run TestName ./...                  # single test (package selector required)
 go test ./clients/ -v
+
+# Quality gates (three tiers)
+make quick          # vet + build + test — fast pre-commit check
+make check          # quick + golangci-lint + govulncheck + coupling snapshot
+make audit          # check + per-file coverage floor enforcement
+make cover-update   # rewrite coverage-floors.txt at current numbers (after intentional changes)
 ```
 
 Config precedence (highest first): CLI flags → env (`LOKI_API_TYPE`, `LOKI_BASE_URL`, `LOKI_MODEL`, `LOKI_BEARER_TOKEN`, `LOKI_DEBUG`) → config file. See `llm.env.example`.
@@ -41,7 +47,7 @@ Two-package layout: `main` (root) holds CLI/tooling/context; `clients/` holds LL
 - `ContextManager` — conversation state, token accounting, plan/concise mode, active task.
 - `ToolExecutor` / `ToolSchemaProvider` / `CompactFunc` — callbacks injected at client construction.
 
-`main.go` wires it together: builds `ContextManager` (root pkg) → passes it plus `ExecuteToolWithPlanMode` and `GetAvailableTools` (from `tools.go`) into `clients.CreateClient`. The factory picks `OllamaClient` or `OpenAIClient` based on `APIType`. After construction, `client.DetectContextWindow()` is called and the context manager is sized to 75% of the model's window (4000-token fallback).
+`main.go` wires it together: builds `ContextManager` (root pkg) → passes it plus `ExecuteToolWithPlanMode` and `GetAvailableTools` (from `tools.go`) into `clients.CreateClient`. The factory picks `OllamaClient` or `OpenAIClient` based on `APIType`. After construction, `client.DetectContextWindow()` is called; the result is passed directly to `ctxMgr.SetMaxTokens()` so the context display shows the real window size. Compaction fires automatically at 75% (`compactionThresholdRatio` in `context_manager.go`). Fallback is 4000 tokens.
 
 ### Key files
 - `main.go` — flag parsing, signal handling, REPL loop, slash-command dispatch.

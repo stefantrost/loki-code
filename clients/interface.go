@@ -4,15 +4,17 @@ import "time"
 
 // ChatMessage represents a message in the conversation
 type ChatMessage struct {
-	Role      string     `json:"role"`
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
 // ToolCall represents a function call request from the LLM
 type ToolCall struct {
 	ID       string   `json:"id,omitempty"`
 	Type     string   `json:"type,omitempty"`
+	Index    int      `json:"index,omitempty"`
 	Function ToolFunc `json:"function"`
 }
 
@@ -57,6 +59,9 @@ type ContextManager interface {
 	Clear()
 	CompactContext(compactFunc CompactFunc) error
 	CanCompact() bool
+	// UpdateTokenCount stores a real prompt-token count received from the
+	// provider API, replacing the character-ratio estimate for that turn.
+	UpdateTokenCount(promptTokens int)
 	SetPlanMode(bool)
 	IsInPlanMode() bool
 	SetConciseMode(bool)
@@ -130,10 +135,13 @@ type ClientConfig struct {
 	Debug       bool
 }
 
-// ChatResponse represents a streaming response chunk
+// ChatResponse represents a streaming response chunk from the Ollama API.
+// The final chunk (Done==true) includes real token counts.
 type ChatResponse struct {
-	Model     string      `json:"model"`
-	CreatedAt time.Time   `json:"created_at"`
-	Message   ChatMessage `json:"message"`
-	Done      bool        `json:"done"`
+	Model           string      `json:"model"`
+	CreatedAt       time.Time   `json:"created_at"`
+	Message         ChatMessage `json:"message"`
+	Done            bool        `json:"done"`
+	PromptEvalCount int         `json:"prompt_eval_count,omitempty"`
+	EvalCount       int         `json:"eval_count,omitempty"`
 }

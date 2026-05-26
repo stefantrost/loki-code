@@ -208,7 +208,7 @@ func runAnalyzer(analyzer AnalyzerInfo, cmdArgs []string) (string, error) {
 
 	case <-time.After(timeout):
 		if cmd.Process != nil {
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill()
 		}
 		return "", fmt.Errorf("analysis timed out after %v", timeout)
 	}
@@ -217,10 +217,10 @@ func runAnalyzer(analyzer AnalyzerInfo, cmdArgs []string) (string, error) {
 func formatAnalysisResults(analyzerName, output, language, scope, filePath string) string {
 	var result strings.Builder
 
-	result.WriteString(fmt.Sprintf("🔍 Static Analysis Results (%s)\n", analyzerName))
-	result.WriteString(fmt.Sprintf("Language: %s | Scope: %s", language, scope))
+	fmt.Fprintf(&result, "🔍 Static Analysis Results (%s)\n", analyzerName)
+	fmt.Fprintf(&result, "Language: %s | Scope: %s", language, scope)
 	if filePath != "" {
-		result.WriteString(fmt.Sprintf(" | File: %s", filePath))
+		fmt.Fprintf(&result, " | File: %s", filePath)
 	}
 	result.WriteString("\n")
 	result.WriteString(strings.Repeat("=", 50) + "\n\n")

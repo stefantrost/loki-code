@@ -1,15 +1,24 @@
 package clients
 
 // mergeToolCallDeltas merges incoming tool-call deltas into the accumulated
-// list, identifying matches by ID. Streaming providers (notably OpenAI) split
-// a single tool call across multiple chunks; without merging, duplicate or
-// partial calls accumulate. Unmatched deltas are appended as new calls.
+// list. Matches first by ID (when present), then by Index. Ollama sends
+// complete calls so merging is a no-op there; this logic exists mainly as a
+// defensive fallback for providers that stream partial tool calls.
 func mergeToolCallDeltas(existing []ToolCall, deltas []ToolCall) []ToolCall {
 	for _, d := range deltas {
 		idx := -1
 		if d.ID != "" {
+			// Delta has an ID: match by ID only. If not found, this is a new call.
 			for i := range existing {
 				if existing[i].ID == d.ID {
+					idx = i
+					break
+				}
+			}
+		} else {
+			// No ID: this is a continuation fragment; match by Index.
+			for i := range existing {
+				if existing[i].Index == d.Index {
 					idx = i
 					break
 				}
@@ -18,6 +27,9 @@ func mergeToolCallDeltas(existing []ToolCall, deltas []ToolCall) []ToolCall {
 		if idx == -1 {
 			existing = append(existing, d)
 			continue
+		}
+		if d.ID != "" {
+			existing[idx].ID = d.ID
 		}
 		if d.Type != "" {
 			existing[idx].Type = d.Type

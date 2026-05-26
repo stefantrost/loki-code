@@ -97,7 +97,7 @@ func executeCommand(args map[string]interface{}) (string, error) {
 	case <-time.After(timeout):
 		slog.Error("Command timed out", "command", command, "timeout", timeout)
 		if cmd.Process != nil {
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill()
 		}
 		return "", fmt.Errorf("command timed out after %v", timeout)
 	}

@@ -14,11 +14,6 @@ import (
 // were picked empirically against qwen3:32b and gpt-4-class tokenizers and
 // will drift on tool-call-heavy turns. Treat them as approximate.
 const (
-	// defaultRetainCount is how many recent messages smartTrim aims to keep.
-	defaultRetainCount = 16
-	// trimSafetyMargin extends retainCount when choosing a safe cutoff to
-	// avoid slicing in the middle of a tool-call/result pair.
-	trimSafetyMargin = 4
 	// toolMessageTokenInflation accounts for the wrapping JSON/tool-result
 	// metadata that providers add around the raw content we count.
 	toolMessageTokenInflation = 1.2
@@ -26,17 +21,18 @@ const (
 	// (role, separators, etc.) before dividing by charsPerToken.
 	perMessageOverheadChars = 50
 	// charsPerToken is the rough character-to-token ratio for English+code.
+	// Used only as a cold-start fallback before the first real API token count.
 	charsPerToken = 4
-	// tokenSafetyFactor inflates the final estimate to leave headroom for
+	// tokenSafetyFactor inflates the cold-start estimate to leave headroom for
 	// tokenizer differences across models.
 	tokenSafetyFactor = 1.15
-	// compactionThresholdRatio gates /compact: at least this fraction of
-	// maxTokens must be in use before compaction is allowed.
-	compactionThresholdRatio = 0.6
+	// compactionThresholdRatio is the fraction of maxTokens at which
+	// auto-compact triggers (and /compact is permitted manually).
+	compactionThresholdRatio = 0.75
 	// compactionRecentRatio controls how much of maxTokens to keep verbatim
 	// at the tail of a compaction (the rest gets summarized).
 	compactionRecentRatio = 0.25
-	// compactionMinMessages is the minimum message count before /compact will run.
+	// compactionMinMessages is the minimum message count before compaction runs.
 	compactionMinMessages = 6
 )
 
@@ -44,15 +40,17 @@ const (
 // All public methods are safe for concurrent use; internal helpers ending in
 // "Locked" assume the caller already holds mu.
 type ContextManager struct {
-	mu             sync.RWMutex
-	messages       []clients.ChatMessage
-	maxTokens      int
-	systemPrompt   clients.ChatMessage
-	planModePrompt clients.ChatMessage
-	retainCount    int
-	planMode       bool
-	conciseMode    bool
-	tasks          taskTracker
+	mu               sync.RWMutex
+	messages         []clients.ChatMessage
+	maxTokens        int
+	systemPrompt     clients.ChatMessage
+	planModePrompt   clients.ChatMessage
+	planMode         bool
+	conciseMode      bool
+	tasks            taskTracker
+	// lastKnownTokens holds the real prompt-token count from the most recent
+	// API response. -1 means no real count has arrived yet (cold-start).
+	lastKnownTokens  int
 }
 
 func NewContextManager(maxTokens int, toolProvider clients.ToolSchemaProvider) *ContextManager {
@@ -155,12 +153,11 @@ CRITICAL: You are in PLAN MODE - analyze and plan thoroughly, but don't make act
 	}
 
 	return &ContextManager{
-		messages:       []clients.ChatMessage{},
-		maxTokens:      maxTokens,
-		systemPrompt:   systemPrompt,
-		planModePrompt: planModePrompt,
-		retainCount:    defaultRetainCount,
-		planMode:       false,
+		messages:        []clients.ChatMessage{},
+		maxTokens:       maxTokens,
+		systemPrompt:    systemPrompt,
+		planModePrompt:  planModePrompt,
+		lastKnownTokens: -1,
 	}
 }
 
@@ -189,8 +186,6 @@ func (cm *ContextManager) AddMessage(message clients.ChatMessage) {
 	if message.Role == "assistant" {
 		cm.checkTaskCompletionLocked(message)
 	}
-
-	cm.trimIfNeeded()
 }
 
 func (cm *ContextManager) GetMessages() []clients.ChatMessage {
@@ -234,73 +229,6 @@ func (cm *ContextManager) GetSystemPrompt() clients.ChatMessage {
 	return cm.systemPrompt
 }
 
-func (cm *ContextManager) trimIfNeeded() {
-	slog.Debug("trimIfNeeded called", "current_messages", len(cm.messages), "max_tokens", cm.maxTokens)
-
-	allMessages := cm.getMessagesLocked()
-	currentTokens := cm.estimateTokens(allMessages)
-	slog.Debug("Token estimation completed", "current_tokens", currentTokens, "max_tokens", cm.maxTokens)
-
-	if currentTokens <= cm.maxTokens {
-		slog.Debug("Token count within limits, no trimming needed", "current_tokens", currentTokens)
-		return
-	}
-
-	if cm.hasToolCallsInProgressLocked() {
-		slog.Warn("Context limit reached but tool calls in progress, delaying trim",
-			"current_tokens", currentTokens, "max_tokens", cm.maxTokens)
-		fmt.Printf("\n🔧 Context limit reached (%d/%d tokens) but tool calls in progress - delaying trim\n",
-			currentTokens, cm.maxTokens)
-		return
-	}
-
-	beforeMessageCount := len(cm.messages)
-	slog.Warn("Context limit exceeded, initiating trim", "current_tokens", currentTokens,
-		"max_tokens", cm.maxTokens, "message_count", beforeMessageCount)
-	fmt.Printf("\n⚠️ Context approaching limit (%d/%d tokens, %d messages), trimming...\n",
-		currentTokens, cm.maxTokens, beforeMessageCount)
-
-	cm.smartTrim()
-
-	afterMessageCount := len(cm.messages)
-	trimmedTokens := cm.estimateTokens(cm.getMessagesLocked())
-	fmt.Printf("✓ Context trimmed to %d tokens (%d messages, removed %d messages)\n",
-		trimmedTokens, afterMessageCount, beforeMessageCount-afterMessageCount)
-}
-
-func (cm *ContextManager) smartTrim() {
-	if len(cm.messages) <= cm.retainCount {
-		return
-	}
-
-	conservativeRetainCount := cm.retainCount + trimSafetyMargin
-	if len(cm.messages) <= conservativeRetainCount {
-		return
-	}
-
-	keepFromIndex := len(cm.messages) - conservativeRetainCount
-	cutoffIndex := cm.findSafeCutoff(keepFromIndex)
-
-	if cutoffIndex > 0 {
-		cm.messages = cm.messages[cutoffIndex:]
-	}
-}
-
-func (cm *ContextManager) findSafeCutoff(preferredIndex int) int {
-	for i := preferredIndex; i > 0; i-- {
-		if i < len(cm.messages) &&
-			cm.messages[i-1].Role == "assistant" &&
-			len(cm.messages[i-1].ToolCalls) == 0 {
-			return i
-		}
-
-		if i < len(cm.messages) && cm.messages[i-1].Role == "tool" {
-			return i
-		}
-	}
-
-	return preferredIndex
-}
 
 func (cm *ContextManager) estimateTokens(messages []clients.ChatMessage) int {
 	totalChars := 0
@@ -332,16 +260,31 @@ func (cm *ContextManager) estimateTokens(messages []clients.ChatMessage) int {
 func (cm *ContextManager) GetStats() (int, int, int) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	currentTokens := cm.estimateTokens(cm.getMessagesLocked())
-	messageCount := len(cm.messages)
-	return currentTokens, messageCount, cm.maxTokens
+	var currentTokens int
+	if cm.lastKnownTokens >= 0 {
+		currentTokens = cm.lastKnownTokens
+	} else {
+		currentTokens = cm.estimateTokens(cm.getMessagesLocked())
+	}
+	return currentTokens, len(cm.messages), cm.maxTokens
+}
+
+// UpdateTokenCount stores the real prompt-token count received from the
+// provider after a completed response. Replaces the heuristic estimate.
+func (cm *ContextManager) UpdateTokenCount(promptTokens int) {
+	if promptTokens <= 0 {
+		return
+	}
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.lastKnownTokens = promptTokens
+	slog.Debug("Token count updated from API", "prompt_tokens", promptTokens)
 }
 
 func (cm *ContextManager) SetMaxTokens(maxTokens int) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.maxTokens = maxTokens
-	cm.trimIfNeeded()
 }
 
 func (cm *ContextManager) Clear() {
@@ -393,7 +336,12 @@ func (cm *ContextManager) CanCompact() bool {
 }
 
 func (cm *ContextManager) canCompactLocked() bool {
-	currentTokens := cm.estimateTokens(cm.getMessagesLocked())
+	var currentTokens int
+	if cm.lastKnownTokens >= 0 {
+		currentTokens = cm.lastKnownTokens
+	} else {
+		currentTokens = cm.estimateTokens(cm.getMessagesLocked())
+	}
 	threshold := int(float64(cm.maxTokens) * compactionThresholdRatio)
 	return currentTokens >= threshold && len(cm.messages) >= compactionMinMessages
 }
@@ -614,9 +562,9 @@ func generateToolSchema(toolProvider clients.ToolSchemaProvider) string {
 			continue
 		}
 
-		schema.WriteString(fmt.Sprintf("%d. %s\n", i+1, tool.Function.Name))
-		schema.WriteString(fmt.Sprintf("   %s\n", tool.Function.Description))
-		schema.WriteString(fmt.Sprintf("   Schema: %s\n\n", string(toolJSON)))
+		fmt.Fprintf(&schema, "%d. %s\n", i+1, tool.Function.Name)
+		fmt.Fprintf(&schema, "   %s\n", tool.Function.Description)
+		fmt.Fprintf(&schema, "   Schema: %s\n\n", string(toolJSON))
 	}
 
 	schema.WriteString("SMART TOOL USAGE PATTERNS:\n\n")

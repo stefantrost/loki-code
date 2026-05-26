@@ -197,6 +197,40 @@ func TestArchitecture_NoToolNamesInClients(t *testing.T) {
 	}
 }
 
+// TestArchitecture_NoThirdPartyDeps keeps the module stdlib-only. A new
+// require directive in go.mod must be a deliberate decision, opted in via a
+// trailing `// allow: <reason>` comment on the line. Without that marker this
+// test fails so a casual `go get` can't sneak a dependency in.
+func TestArchitecture_NoThirdPartyDeps(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inBlock := false
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "//") {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "require ("):
+			inBlock = true
+			continue
+		case inBlock && line == ")":
+			inBlock = false
+			continue
+		case strings.HasPrefix(line, "require "):
+			if !strings.Contains(line, "// allow:") {
+				t.Errorf("go.mod: third-party require without `// allow: <reason>` marker: %s", line)
+			}
+		case inBlock:
+			if !strings.Contains(raw, "// allow:") {
+				t.Errorf("go.mod: third-party require without `// allow: <reason>` marker: %s", line)
+			}
+		}
+	}
+}
+
 // TestArchitecture_StructCohesion looks at every method on the public client
 // types and asserts each method references at least one field of its receiver.
 // A method that uses none of the struct's fields is a hint that the type is
@@ -231,6 +265,7 @@ func (fakeContextManager) SetMaxTokens(int)                                     
 func (fakeContextManager) Clear()                                                {}
 func (fakeContextManager) CompactContext(clients.CompactFunc) error              { return nil }
 func (fakeContextManager) CanCompact() bool                                      { return false }
+func (fakeContextManager) UpdateTokenCount(int)                                  {}
 func (fakeContextManager) SetPlanMode(bool)                                      {}
 func (fakeContextManager) IsInPlanMode() bool                                    { return false }
 func (fakeContextManager) SetConciseMode(bool)                                   {}

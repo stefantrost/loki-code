@@ -163,7 +163,7 @@ func executeCurl(args map[string]interface{}) (string, error) {
 	case <-time.After(time.Duration(timeout+5) * time.Second):
 		slog.Error("HTTP request timed out", "url", rawURL, "timeout", timeout)
 		if cmd.Process != nil {
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill()
 		}
 		return "", fmt.Errorf("HTTP request timed out after %d seconds", timeout)
 	}
@@ -262,8 +262,8 @@ func validateHeader(header string) error {
 func formatHTTPResponse(method, rawURL, response string) string {
 	var result strings.Builder
 
-	result.WriteString(fmt.Sprintf("🌐 HTTP %s Request\n", method))
-	result.WriteString(fmt.Sprintf("URL: %s\n", rawURL))
+	fmt.Fprintf(&result, "🌐 HTTP %s Request\n", method)
+	fmt.Fprintf(&result, "URL: %s\n", rawURL)
 	result.WriteString(strings.Repeat("=", 50) + "\n\n")
 
 	if strings.TrimSpace(response) == "" {

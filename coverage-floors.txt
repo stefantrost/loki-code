@@ -1,0 +1,20 @@
+# Per-file coverage floors. Regenerate with scripts/coverage-floor.sh --update.
+# Each line: <file> <floor-percentage>
+loki-code/clients/base.go 6.5
+loki-code/clients/factory.go 50.0
+loki-code/clients/ollama.go 0.0
+loki-code/clients/openai.go 0.0
+loki-code/clients/streaming.go 72.0
+loki-code/config.go 0.0
+loki-code/context_manager.go 81.4
+loki-code/main.go 0.9
+loki-code/path_validation.go 85.0
+loki-code/project_detect.go 84.6
+loki-code/task_tracker.go 80.0
+loki-code/tools_analyze.go 0.0
+loki-code/tools_exec.go 67.9
+loki-code/tools_file.go 60.2
+loki-code/tools_net.go 24.2
+loki-code/tools_search.go 52.2
+loki-code/tools.go 53.3
+loki-code/ui.go 0.0

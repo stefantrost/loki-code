@@ -231,5 +231,5 @@ MODEL_NAME=qwen3:32b
 # DEBUG=false
 `
 	
-	return os.WriteFile(path, []byte(exampleContent), 0644)
+	return os.WriteFile(path, []byte(exampleContent), 0600)
 }

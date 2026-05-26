@@ -4,9 +4,8 @@ package main
 // Adding a new tool here lets ExecuteToolWithPlanMode dispatch to it without
 // editing any switch statements.
 type toolEntry struct {
-	exec         func(args map[string]interface{}) (string, error)
-	planAllowed  bool
-	requiresArgs bool // unused today; reserved for future schema validation
+	exec        func(args map[string]interface{}) (string, error)
+	planAllowed bool
 }
 
 // toolRegistry maps tool name → entry. Order doesn't matter; lookup is by name.

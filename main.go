@@ -96,12 +96,12 @@ func main() {
 		config.Debug = true
 	}
 
+	PrintConfig(config)
+
 	if err := ValidateAndFixConfig(&config); err != nil {
 		slog.Error("Configuration error", "error", err)
 		os.Exit(1)
 	}
-
-	PrintConfig(config)
 
 	if *listModels {
 		fmt.Println("Available models:")
@@ -137,10 +137,8 @@ func main() {
 
 	// Detect and set context window
 	if contextWindow, err := client.DetectContextWindow(); err == nil {
-		optimalLimit := int(float64(contextWindow) * 0.75)
-		ctxMgr.SetMaxTokens(optimalLimit)
-		fmt.Printf("✓ Detected context window: %d tokens\n", contextWindow)
-		fmt.Printf("✓ Set context limit: %d tokens (75%% utilization)\n", optimalLimit)
+		ctxMgr.SetMaxTokens(contextWindow)
+		fmt.Printf("✓ Detected context window: %d tokens (auto-compact at 75%%)\n", contextWindow)
 	} else {
 		fmt.Printf("⚠️ Could not detect context window: %v\n", err)
 		fmt.Printf("✓ Using default context limit: 4,000 tokens\n")
@@ -342,6 +340,13 @@ func main() {
 		fmt.Print("Assistant: ")
 		if err := client.StreamChat(input); err != nil {
 			slog.Error("StreamChat error", "error", err)
+		}
+
+		if client.CanCompact() {
+			fmt.Println("⚡ Context at 75% — auto-compacting...")
+			if err := client.CompactContext(); err != nil {
+				slog.Warn("Auto-compact failed", "error", err)
+			}
 		}
 	}
 

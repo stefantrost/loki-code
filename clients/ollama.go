@@ -25,6 +25,7 @@ type OllamaRequest struct {
 	Tools    []Tool        `json:"tools,omitempty"`
 }
 
+
 type OllamaModelShowRequest struct {
 	Model string `json:"model"`
 }
@@ -196,6 +197,9 @@ func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 		if chatResponse.Done {
 			slog.Debug("Streaming complete", "total_chunks", totalChunks, "final_content_length", len(currentMessage.Content),
 				"has_tool_calls", hasToolCalls, "tool_calls_count", len(currentMessage.ToolCalls))
+			if chatResponse.PromptEvalCount > 0 {
+				c.contextManager.UpdateTokenCount(chatResponse.PromptEvalCount)
+			}
 			fmt.Println()
 			currentMessage.Role = "assistant"
 			c.debugLog("Streaming complete. Final message content: %q", currentMessage.Content)

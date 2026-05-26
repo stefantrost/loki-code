@@ -122,8 +122,9 @@ func (c *baseClient) handleToolCalls(self streamer, assistantMessage ChatMessage
 		fmt.Printf("✓ %s completed\n", toolCall.Function.Name)
 
 		c.contextManager.AddMessage(ChatMessage{
-			Role:    "tool",
-			Content: result,
+			Role:       "tool",
+			Content:    result,
+			ToolCallID: toolCall.ID,
 		})
 	}
 

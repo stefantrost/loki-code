@@ -39,13 +39,13 @@ func executeCreateFile(args map[string]interface{}) (string, error) {
 
 	dir := filepath.Dir(path)
 	slog.Debug("Creating directory", "dir", dir)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		slog.Error("Failed to create directory", "dir", dir, "error", err)
 		return "", fmt.Errorf("failed to create directory: %v", err)
 	}
 
 	slog.Debug("Writing file", "path", path, "content_length", len(content))
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		slog.Error("Failed to write file", "path", path, "error", err)
 		return "", fmt.Errorf("failed to create file: %v", err)
 	}
@@ -119,7 +119,7 @@ func executeUpdateFile(args map[string]interface{}) (string, error) {
 		return fmt.Sprintf("File update cancelled by user: %s", path), nil
 	}
 
-	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(newContent), 0600); err != nil {
 		return "", fmt.Errorf("failed to update file: %v", err)
 	}
 

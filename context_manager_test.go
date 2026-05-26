@@ -215,30 +215,22 @@ func TestContextManagerToolCallsInProgress(t *testing.T) {
 	}
 }
 
-func TestContextManagerTrimIfNeeded(t *testing.T) {
+func TestContextManagerMessagesAccumulate(t *testing.T) {
 	provider := func() []clients.Tool {
 		return []clients.Tool{}
 	}
 
-	// Very small token limit to force trimming
 	cm := NewContextManager(100, provider)
 
-	// Add many messages to exceed token limit
-	for i := 0; i < 50; i++ {
-		cm.AddMessage(clients.ChatMessage{
-			Role:    "user",
-			Content: strings.Repeat("word ", 20),
-		})
-		cm.AddMessage(clients.ChatMessage{
-			Role:    "assistant",
-			Content: strings.Repeat("response ", 20),
-		})
+	// smartTrim was removed; messages now accumulate until compaction.
+	for i := 0; i < 10; i++ {
+		cm.AddMessage(clients.ChatMessage{Role: "user", Content: "word"})
+		cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: "ok"})
 	}
 
 	messages := cm.GetMessages()
-	// Should have been trimmed - system prompt + some recent messages
 	if len(messages) < 2 {
-		t.Errorf("expected at least 2 messages after trim, got %d", len(messages))
+		t.Errorf("expected at least 2 messages, got %d", len(messages))
 	}
 }
 
@@ -561,5 +553,61 @@ func TestContextManagerTokenEstimation(t *testing.T) {
 	tokens2, _, _ := cm.GetStats()
 	if tokens2 <= tokens {
 		t.Error("token count should increase after adding message")
+	}
+}
+
+func TestContextManagerUpdateTokenCount(t *testing.T) {
+	provider := func() []clients.Tool { return nil }
+	cm := NewContextManager(10000, provider)
+
+	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "hello"})
+	estimate, _, _ := cm.GetStats()
+	if estimate == 0 {
+		t.Fatal("heuristic estimate should be > 0")
+	}
+
+	// After a real count arrives, GetStats should return it instead of the estimate.
+	cm.UpdateTokenCount(1234)
+	real, _, _ := cm.GetStats()
+	if real != 1234 {
+		t.Errorf("GetStats() = %d, want 1234 (real count)", real)
+	}
+
+	// Non-positive updates must be ignored.
+	cm.UpdateTokenCount(0)
+	after, _, _ := cm.GetStats()
+	if after != 1234 {
+		t.Errorf("GetStats() = %d after zero update, want 1234", after)
+	}
+}
+
+func TestContextManagerCanCompact(t *testing.T) {
+	provider := func() []clients.Tool { return nil }
+	cm := NewContextManager(1000, provider)
+
+	// Too few messages (system + 2 pairs = 5 < compactionMinMessages=6).
+	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "msg"})
+	cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: "ok"})
+	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "msg"})
+	cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: "ok"})
+	cm.UpdateTokenCount(800) // 80% of 1000 — above threshold, but not enough messages
+	if cm.CanCompact() {
+		t.Error("CanCompact() = true with only 5 messages (system+4), want false")
+	}
+
+	// Add enough messages to pass the minimum (system + 6 pairs = 13 >= 6).
+	for i := 0; i < 6; i++ {
+		cm.AddMessage(clients.ChatMessage{Role: "user", Content: "msg"})
+		cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: "ok"})
+	}
+	cm.UpdateTokenCount(800)
+	if !cm.CanCompact() {
+		t.Error("CanCompact() = false with real count at 80% and enough messages, want true")
+	}
+
+	// Below threshold.
+	cm.UpdateTokenCount(500) // 50% — below 75%
+	if cm.CanCompact() {
+		t.Error("CanCompact() = true with real count at 50%, want false")
 	}
 }

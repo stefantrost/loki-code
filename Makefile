@@ -26,6 +26,12 @@ help:
 	@echo "  install      - Install binary to /usr/local/bin"
 	@echo "  uninstall    - Remove binary from /usr/local/bin"
 	@echo ""
+	@echo "Quality gates (fast → thorough):"
+	@echo "  quick        - vet + build + test (no race). Pre-commit speed."
+	@echo "  check        - quick + lint + race tests + coverage + vuln + coupling. CI parity."
+	@echo "  audit        - check + per-file coverage floor enforcement."
+	@echo "  cover-update - Regenerate coverage-floors.txt at current numbers."
+	@echo ""
 	@echo "Variables (override with MODEL_NAME=... make run):"
 	@echo "  MODEL_NAME   - Model to use (default: $(MODEL_NAME))"
 	@echo "  OLLAMA_URL   - Ollama server URL (default: $(OLLAMA_URL))"
@@ -137,6 +143,46 @@ uninstall:
 	@echo "Removing $(BINARY_NAME) from /usr/local/bin..."
 	@sudo rm -f /usr/local/bin/$(BINARY_NAME)
 	@echo "$(BINARY_NAME) uninstalled successfully"
+
+# Quality gates ---------------------------------------------------------------
+# Three tiers, fast → thorough. Pick the one that matches the situation:
+#   quick   — what you run while iterating; seconds.
+#   check   — what CI runs; matches the workflow exactly.
+#   audit   — check + per-file coverage floor (would fail the build on a drop).
+
+.PHONY: quick
+quick:
+	@echo "→ go vet"
+	@go vet ./...
+	@echo "→ go build"
+	@go build ./...
+	@echo "→ go test"
+	@go test ./...
+
+.PHONY: check
+check:
+	@echo "→ go vet"
+	@go vet ./...
+	@echo "→ go build"
+	@go build ./...
+	@echo "→ go test -race -coverprofile"
+	@go test -race -coverprofile=cover.out -covermode=atomic ./...
+	@echo "→ golangci-lint"
+	@golangci-lint run --timeout=5m
+	@echo "→ govulncheck"
+	@govulncheck ./...
+	@echo "→ coupling snapshot"
+	@./scripts/coupling-snapshot.sh
+
+.PHONY: audit
+audit: check
+	@echo "→ coverage floor"
+	@./scripts/coverage-floor.sh
+
+.PHONY: cover-update
+cover-update:
+	@go test -race -coverprofile=cover.out -covermode=atomic ./...
+	@./scripts/coverage-floor.sh --update
 
 # Show project status
 .PHONY: status
