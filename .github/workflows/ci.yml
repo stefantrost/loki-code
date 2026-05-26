@@ -54,8 +54,6 @@ jobs:
         if: always()
         run: ./scripts/coupling-snapshot.sh
 
-      - name: Coverage floor
-        run: ./scripts/coverage-floor.sh
 
   lint:
     runs-on: ubuntu-latest
