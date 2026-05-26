@@ -2,324 +2,329 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
+	"log/slog"
 	"strings"
+
+	"loki-code/clients"
 )
 
-type Tool struct {
-	Type     string   `json:"type"`
-	Function Function `json:"function"`
+// Confirmation hooks for mutating tools. Tests override these to bypass
+// interactive prompts; the defaults read from stdin via the ui helpers.
+var (
+	confirmYN   = promptUser
+	confirmDiff = showDiffAndConfirm
+)
+
+// SmartTruncate is a TruncationPolicy that knows which tools produce
+// line-oriented output (list_files / find_files) and trims at line boundaries
+// for them while falling back to byte-truncation for everything else.
+// main.go registers this with each LLM client so clients/ stays generic.
+func SmartTruncate(result, toolName string) string {
+	const maxLength = clients.MaxToolResultChars
+	if len(result) <= maxLength {
+		return result
+	}
+	switch toolName {
+	case "read_file":
+		return result[:maxLength-100] + fmt.Sprintf(
+			"\n\n... (file content truncated - showing first %d characters of %d total)",
+			maxLength-100, len(result))
+	case "list_files", "find_files":
+		lines := strings.Split(result, "\n")
+		var kept []string
+		used := 0
+		for _, line := range lines {
+			if used+len(line)+1 > maxLength-100 {
+				break
+			}
+			kept = append(kept, line)
+			used += len(line) + 1
+		}
+		out := strings.Join(kept, "\n")
+		if len(kept) < len(lines) {
+			out += fmt.Sprintf("\n... (output truncated - showing %d of %d lines)",
+				len(kept), len(lines))
+		}
+		return out
+	default:
+		return result[:maxLength-50] + fmt.Sprintf("... (truncated at %d characters)", maxLength-50)
+	}
 }
 
-type Function struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Parameters  map[string]interface{} `json:"parameters"`
-}
-
-type ToolCall struct {
-	Function ToolFunction `json:"function"`
-}
-
-type ToolFunction struct {
-	Name      string                 `json:"name"`
-	Arguments map[string]interface{} `json:"arguments"`
-}
-
-func GetAvailableTools() []Tool {
-	return []Tool{
+// GetAvailableTools returns the JSON-schema list shown to the model. The
+// per-tool executor and plan-mode policy live in toolRegistry; the two must
+// stay in sync (enforced by TestArchitecture_RegistryCompleteness).
+func GetAvailableTools() []clients.Tool {
+	baseTools := []clients.Tool{
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "create_file",
-				Description: "Create a new file with specified content",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"path": map[string]interface{}{
-							"type":        "string",
-							"description": "File path to create",
-						},
-						"content": map[string]interface{}{
-							"type":        "string",
-							"description": "Content to write to the file",
-						},
+				Description: "Create a new file with content. Use after analyzing project structure and planning the implementation.",
+				Arguments: map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "File path to create",
 					},
-					"required": []string{"path", "content"},
+					"content": map[string]interface{}{
+						"type":        "string",
+						"description": "Content to write to the file",
+					},
 				},
 			},
 		},
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "read_file",
 				Description: "Read the contents of a file",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"path": map[string]interface{}{
-							"type":        "string",
-							"description": "File path to read",
-						},
+				Arguments: map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "File path to read",
 					},
-					"required": []string{"path"},
 				},
 			},
 		},
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "update_file",
-				Description: "Update an existing file with new content",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"path": map[string]interface{}{
-							"type":        "string",
-							"description": "File path to update",
-						},
-						"content": map[string]interface{}{
-							"type":        "string",
-							"description": "New content for the file",
-						},
+				Description: "Update existing file content. Always read the file first to understand current implementation before making changes.",
+				Arguments: map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "File path to update",
 					},
-					"required": []string{"path", "content"},
+					"content": map[string]interface{}{
+						"type":        "string",
+						"description": "New content for the file",
+					},
 				},
 			},
 		},
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "delete_file",
 				Description: "Delete a file",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"path": map[string]interface{}{
-							"type":        "string",
-							"description": "File path to delete",
-						},
+				Arguments: map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "File path to delete",
 					},
-					"required": []string{"path"},
 				},
 			},
 		},
 		{
 			Type: "function",
-			Function: Function{
+			Function: clients.ToolFunc{
 				Name:        "list_files",
 				Description: "List files in a directory",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"path": map[string]interface{}{
-							"type":        "string",
-							"description": "Directory path to list (default: current directory)",
-						},
+				Arguments: map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Directory path to list (default: current directory)",
 					},
-					"required": []string{},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: clients.ToolFunc{
+				Name:        "exec_command",
+				Description: "Execute shell commands safely (whitelist of allowed commands)",
+				Arguments: map[string]interface{}{
+					"command": map[string]interface{}{
+						"type":        "string",
+						"description": "Command to execute (from whitelist: find, grep, pwd, tree, wc, sort, uniq, whoami, date, which)",
+					},
+					"args": map[string]interface{}{
+						"type":        "array",
+						"description": "Command arguments as array of strings",
+						"items":       map[string]interface{}{"type": "string"},
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: clients.ToolFunc{
+				Name:        "find_files",
+				Description: "Find files by name pattern using find command",
+				Arguments: map[string]interface{}{
+					"pattern": map[string]interface{}{
+						"type":        "string",
+						"description": "File name pattern to search for (supports wildcards like *.go)",
+					},
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Directory to search in (default: current directory)",
+					},
+					"type": map[string]interface{}{
+						"type":        "string",
+						"description": "File type filter: 'f' for files only, 'd' for directories only",
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: clients.ToolFunc{
+				Name:        "grep_content",
+				Description: "Search for patterns in file contents using grep",
+				Arguments: map[string]interface{}{
+					"pattern": map[string]interface{}{
+						"type":        "string",
+						"description": "Pattern to search for in files",
+					},
+					"files": map[string]interface{}{
+						"type":        "string",
+						"description": "File path or pattern (e.g., '*.go', 'src/*.py')",
+					},
+					"options": map[string]interface{}{
+						"type":        "string",
+						"description": "Grep options: -i (ignore case), -n (line numbers), -r (recursive), -l (files only)",
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: clients.ToolFunc{
+				Name:        "get_pwd",
+				Description: "Get current working directory",
+				Arguments:   map[string]interface{}{},
+			},
+		},
+		{
+			Type: "function",
+			Function: clients.ToolFunc{
+				Name:        "tree_view",
+				Description: "Show directory tree structure",
+				Arguments: map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "Directory path to show tree for (default: current directory)",
+					},
+					"depth": map[string]interface{}{
+						"type":        "number",
+						"description": "Maximum depth to show (default: 3)",
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: clients.ToolFunc{
+				Name:        "http_request",
+				Description: "Make HTTP requests using curl. Execute HTTP operations to interact with APIs and web services.",
+				Arguments: map[string]interface{}{
+					"url": map[string]interface{}{
+						"type":        "string",
+						"description": "Target URL (must be http:// or https://)",
+					},
+					"method": map[string]interface{}{
+						"type":        "string",
+						"description": "HTTP method: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS (default: GET)",
+					},
+					"headers": map[string]interface{}{
+						"type":        "object",
+						"description": "Custom headers as key-value pairs (e.g., {\"Content-Type\": \"application/json\"})",
+					},
+					"data": map[string]interface{}{
+						"type":        "string",
+						"description": "Request body data for POST/PUT requests",
+					},
+					"timeout": map[string]interface{}{
+						"type":        "number",
+						"description": "Request timeout in seconds (max: 30, default: 10)",
+					},
+					"follow_redirects": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Follow HTTP redirects (default: true)",
+					},
+				},
+			},
+		},
+	}
+
+	projectInfo := detectProject()
+	if len(projectInfo.Analyzers) > 0 {
+		baseTools = append(baseTools, createAnalyzerTool(projectInfo))
+	}
+
+	return baseTools
+}
+
+func createAnalyzerTool(projectInfo ProjectInfo) clients.Tool {
+	availableAnalyzers := getAnalyzerNames(projectInfo.Analyzers)
+	description := fmt.Sprintf("Run static analysis for %s project (available: %s)",
+		projectInfo.Language,
+		strings.Join(availableAnalyzers, ", "))
+
+	return clients.Tool{
+		Type: "function",
+		Function: clients.ToolFunc{
+			Name:        "analyze_code",
+			Description: description,
+			Arguments: map[string]interface{}{
+				"scope": map[string]interface{}{
+					"type":        "string",
+					"description": "Analysis scope: 'file' (specific file), 'package' (current package/directory), or 'all' (entire project)",
+				},
+				"file_path": map[string]interface{}{
+					"type":        "string",
+					"description": "Specific file to analyze (required for scope='file')",
+				},
+				"analyzer": map[string]interface{}{
+					"type":        "string",
+					"description": fmt.Sprintf("Analyzer to use: %s (default: auto-select best)", strings.Join(availableAnalyzers, ", ")),
+				},
+				"fix": map[string]interface{}{
+					"type":        "boolean",
+					"description": "Auto-fix issues when supported (default: false)",
 				},
 			},
 		},
 	}
 }
 
-func ExecuteTool(toolCall ToolCall) (string, error) {
-	return ExecuteToolWithPlanMode(toolCall, false)
-}
+// ExecuteToolWithPlanMode executes a tool call with optional plan mode restriction.
+// Dispatch and plan-mode policy come from toolRegistry; adding a tool there is
+// the only edit needed.
+func ExecuteToolWithPlanMode(toolCall clients.ToolCall, planMode bool) (string, error) {
+	name := toolCall.Function.Name
+	slog.Debug("ExecuteToolWithPlanMode called", "tool_name", name,
+		"tool_id", toolCall.ID, "plan_mode", planMode, "arguments", toolCall.Function.Arguments)
 
-func ExecuteToolWithPlanMode(toolCall ToolCall, planMode bool) (string, error) {
-	// Check if tool is allowed in plan mode
-	if planMode && !isToolAllowedInPlanMode(toolCall.Function.Name) {
-		return fmt.Sprintf("⚠️ Plan Mode: Cannot execute '%s'. This tool is restricted in plan mode.\n\nConsider adding this operation to your execution plan:\n- %s with the specified parameters", 
-			toolCall.Function.Name, toolCall.Function.Name), nil
-	}
-	
-	switch toolCall.Function.Name {
-	case "create_file":
-		return executeCreateFile(toolCall.Function.Arguments)
-	case "read_file":
-		return executeReadFile(toolCall.Function.Arguments)
-	case "update_file":
-		return executeUpdateFile(toolCall.Function.Arguments)
-	case "delete_file":
-		return executeDeleteFile(toolCall.Function.Arguments)
-	case "list_files":
-		return executeListFiles(toolCall.Function.Arguments)
-	default:
-		return "", fmt.Errorf("unknown tool: %s", toolCall.Function.Name)
-	}
-}
-
-func isToolAllowedInPlanMode(toolName string) bool {
-	allowedTools := map[string]bool{
-		"read_file":  true,
-		"list_files": true,
-	}
-	return allowedTools[toolName]
-}
-
-func executeCreateFile(args map[string]interface{}) (string, error) {
-	path, ok := args["path"].(string)
+	entry, ok := toolRegistry[name]
 	if !ok {
-		return "", fmt.Errorf("path argument is required and must be a string")
+		slog.Error("Unknown tool requested", "tool_name", name)
+		return "", fmt.Errorf("unknown tool: %s", name)
 	}
 
-	content, ok := args["content"].(string)
-	if !ok {
-		return "", fmt.Errorf("content argument is required and must be a string")
+	if planMode && !entry.planAllowed {
+		slog.Warn("Tool execution blocked in plan mode", "tool_name", name)
+		return fmt.Sprintf("⚠️ Plan Mode: Cannot execute '%s'. This tool is restricted in plan mode.\n\nConsider adding this operation to your execution plan:\n- %s with the specified parameters",
+			name, name), nil
 	}
 
-	if err := validatePath(path); err != nil {
-		return "", err
-	}
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create directory: %v", err)
-	}
-
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		return "", fmt.Errorf("failed to create file: %v", err)
-	}
-
-	return fmt.Sprintf("File created successfully: %s", path), nil
-}
-
-func executeReadFile(args map[string]interface{}) (string, error) {
-	path, ok := args["path"].(string)
-	if !ok {
-		return "", fmt.Errorf("path argument is required and must be a string")
-	}
-
-	if err := validatePath(path); err != nil {
-		return "", err
-	}
-
-	content, err := os.ReadFile(path)
+	slog.Debug("Executing tool", "tool_name", name)
+	result, err := entry.exec(toolCall.Function.Arguments)
 	if err != nil {
-		return "", fmt.Errorf("failed to read file: %v", err)
+		slog.Error("Tool execution failed", "tool_name", name, "error", err)
+		return result, err
 	}
 
-	return string(content), nil
+	slog.Debug("Tool execution completed successfully", "tool_name", name,
+		"result_length", len(result), "result_preview", truncateString(result, 500))
+	return result, nil
 }
 
-func executeUpdateFile(args map[string]interface{}) (string, error) {
-	path, ok := args["path"].(string)
-	if !ok {
-		return "", fmt.Errorf("path argument is required and must be a string")
+func isToolAllowedInPlanMode(name string) bool {
+	if entry, ok := toolRegistry[name]; ok {
+		return entry.planAllowed
 	}
-
-	newContent, ok := args["content"].(string)
-	if !ok {
-		return "", fmt.Errorf("content argument is required and must be a string")
-	}
-
-	if err := validatePath(path); err != nil {
-		return "", err
-	}
-
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return "", fmt.Errorf("file does not exist: %s", path)
-	}
-
-	// Read current file content
-	currentContent, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to read current file: %v", err)
-	}
-
-	currentContentStr := string(currentContent)
-	
-	// Check if content is actually different
-	if currentContentStr == newContent {
-		return fmt.Sprintf("No changes needed for %s (content is identical)", path), nil
-	}
-
-	// Show diff and get user confirmation
-	confirmed, err := showDiffAndConfirm(currentContentStr, newContent, path)
-	if err != nil {
-		return "", fmt.Errorf("failed to get user confirmation: %v", err)
-	}
-
-	if !confirmed {
-		return fmt.Sprintf("File update cancelled by user: %s", path), nil
-	}
-
-	// Apply the changes
-	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
-		return "", fmt.Errorf("failed to update file: %v", err)
-	}
-
-	return fmt.Sprintf("File updated successfully: %s", path), nil
+	return false
 }
-
-func executeDeleteFile(args map[string]interface{}) (string, error) {
-	path, ok := args["path"].(string)
-	if !ok {
-		return "", fmt.Errorf("path argument is required and must be a string")
-	}
-
-	if err := validatePath(path); err != nil {
-		return "", err
-	}
-
-	if err := os.Remove(path); err != nil {
-		return "", fmt.Errorf("failed to delete file: %v", err)
-	}
-
-	return fmt.Sprintf("File deleted successfully: %s", path), nil
-}
-
-func executeListFiles(args map[string]interface{}) (string, error) {
-	path := "."
-	if p, ok := args["path"].(string); ok && p != "" {
-		path = p
-	}
-
-	if err := validatePath(path); err != nil {
-		return "", err
-	}
-
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to list directory: %v", err)
-	}
-
-	var files []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			files = append(files, entry.Name()+"/")
-		} else {
-			files = append(files, entry.Name())
-		}
-	}
-
-	if len(files) == 0 {
-		return "Directory is empty", nil
-	}
-
-	return "Files in " + path + ":\n" + strings.Join(files, "\n"), nil
-}
-
-func validatePath(path string) error {
-	cleanPath := filepath.Clean(path)
-	
-	if strings.Contains(cleanPath, "..") {
-		return fmt.Errorf("path traversal not allowed: %s", path)
-	}
-
-	if filepath.IsAbs(cleanPath) {
-		absPath, err := filepath.Abs(".")
-		if err != nil {
-			return fmt.Errorf("failed to get current directory: %v", err)
-		}
-		if !strings.HasPrefix(cleanPath, absPath) {
-			return fmt.Errorf("access outside current directory not allowed: %s", path)
-		}
-	}
-
-	return nil
-}
-

@@ -3,9 +3,15 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
+
+// uiInput is the source UI prompts read from. Defaults to stdin; tests can
+// override with a bytes.Buffer / strings.Reader. Package-level so we don't
+// have to thread it through every confirmation helper.
+var uiInput io.Reader = os.Stdin
 
 // ANSI color constants for terminal output
 const (
@@ -79,7 +85,7 @@ func showDiffAndConfirm(oldContent, newContent, filename string) (bool, error) {
 	
 	// Prompt for confirmation
 	fmt.Print("Apply this change? (y/n): ")
-	scanner := bufio.NewScanner(os.Stdin)
+	scanner := bufio.NewScanner(uiInput)
 	
 	if !scanner.Scan() {
 		return false, fmt.Errorf("failed to read user input")
@@ -92,7 +98,7 @@ func showDiffAndConfirm(oldContent, newContent, filename string) (bool, error) {
 // promptUser displays a prompt and returns user's y/n response
 func promptUser(prompt string) (bool, error) {
 	fmt.Print(prompt + " (y/n): ")
-	scanner := bufio.NewScanner(os.Stdin)
+	scanner := bufio.NewScanner(uiInput)
 	
 	if !scanner.Scan() {
 		return false, fmt.Errorf("failed to read user input")

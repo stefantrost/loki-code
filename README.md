@@ -1,6 +1,6 @@
 # Loki Code - AI Coding Agent
 
-A simple Go-based coding agent that connects to local Ollama models for interactive chat with function calling capabilities.
+A Go-based AI coding agent that connects to Ollama, OpenAI, and OpenAI-compatible APIs for interactive chat with function calling capabilities.
 
 ## Table of Contents
 - [Prerequisites](#prerequisites)
@@ -8,14 +8,17 @@ A simple Go-based coding agent that connects to local Ollama models for interact
 - [Usage](#usage)
 - [Features](#features)
 - [Context Management](#context-management)
+- [Plan Mode](#plan-mode)
+- [Configuration](#configuration)
 - [Architecture](#architecture)
+- [Testing](#testing)
 - [License](#license)
 
 ## Prerequisites
 
-- Go 1.19+ installed
-- Ollama running locally on port 11434
-- qwen3:32b model pulled in Ollama
+- Go 1.24+ installed
+- Ollama running locally on port 11434 (for Ollama API)
+- qwen3:32b model pulled in Ollama (or your preferred model)
 
 ## Setup
 
@@ -27,6 +30,11 @@ A simple Go-based coding agent that connects to local Ollama models for interact
 2. Pull the qwen3:32b model (if not already available):
    ```bash
    ollama pull qwen3:32b
+   ```
+
+3. Create configuration:
+   ```bash
+   ./loki-code --create-config
    ```
 
 ## Usage
@@ -48,12 +56,17 @@ A simple Go-based coding agent that connects to local Ollama models for interact
 ## Features
 
 - Real-time streaming responses from the AI model
-- **Function calling with file manipulation tools**
+- **Multi-API support**: Ollama, OpenAI, and OpenAI-compatible APIs
+- **Function calling with file manipulation tools** (create, read, update, delete, find, grep, exec, HTTP requests, static analysis)
 - **Intelligent context management with token limits**
-- **System prompt engineering for coding assistant behavior**
+- **System prompt engineering** for coding assistant behavior
+- **Plan mode** for read-only analysis
+- **Concise/verbose response modes**
+- **Task tracking** with auto-detection
+- Project-aware tooling (auto-detects Go/Python/Node.js and surfaces relevant static analyzers)
 - Simple CLI interface with special commands
 - Graceful shutdown handling
-- Error handling for network and API issues
+- Security: command whitelisting, path traversal prevention, internal network blocking
 
 ### Example Usage
 
@@ -73,6 +86,10 @@ Ask the AI to perform file operations:
 - `/plan`: Enter plan mode (read-only, creates execution plans)
 - `/execute`: Exit plan mode (enable all tools)
 - `/stats`: Show context statistics (tokens used, message count, current mode)
+- `/concise`: Switch to concise responses
+- `/verbose`: Switch to verbose responses
+- `/task <description>`: Set an active task
+- `/complete`: Mark current task as complete
 - `exit` or `quit`: Exit the application
 
 ## Context Management
@@ -96,7 +113,7 @@ Connecting to Ollama (qwen3:32b)...
 ```
 
 **Benefits:**
-- **Model Agnostic**: Works with any Ollama model automatically
+- **Model Agnostic**: Works with any Ollama or OpenAI-compatible model
 - **Optimal Utilization**: Uses 75% of available context (25% reserved for responses)
 - **Safe Fallback**: Uses 4,000 tokens if detection fails
 - **Future Proof**: Adapts to new models without code changes
@@ -106,7 +123,7 @@ Connecting to Ollama (qwen3:32b)...
 Plan Mode enables safe analysis and planning without executing changes. Perfect for exploring codebases and creating detailed execution plans.
 
 ### Features
-- **Read-Only Operations**: Only `read_file` and `list_files` are allowed
+- **Read-Only Operations**: `read_file`, `list_files`, `find_files`, `grep_content`, `get_pwd`, `tree_view`, `analyze_code`, `http_request` are allowed
 - **Planning Focus**: AI creates structured, multi-step execution plans
 - **Safe Exploration**: Analyze code without risk of changes
 - **Visual Indicators**: `[PLAN] >` prompt shows current mode
@@ -141,12 +158,54 @@ Refactor current session-based authentication to JWT token system
 > # Now execute the plan steps
 ```
 
+## Configuration
+
+Configuration is loaded from multiple sources (highest priority first):
+1. Command line flags
+2. Environment variables (`LOKI_API_TYPE`, `LOKI_BASE_URL`, `LOKI_MODEL`, `LOKI_BEARER_TOKEN`, `LOKI_DEBUG`)
+3. Config file (`llm.env`, `.env`, or `~/.loki-code/config.env`)
+
+### Example Configuration (`llm.env`)
+
+```env
+# For Ollama (default)
+API_TYPE=ollama
+BASE_URL=http://localhost:11434
+MODEL_NAME=qwen3:32b
+
+# For OpenAI
+# API_TYPE=openai
+# BASE_URL=https://api.openai.com/v1
+# MODEL_NAME=gpt-4
+# BEARER_TOKEN=your_openai_api_key_here
+
+# For OpenAI-compatible APIs
+# API_TYPE=openai-compatible
+# BASE_URL=https://your-api.example.com/v1
+# MODEL_NAME=your-model
+# BEARER_TOKEN=your_api_key
+```
+
 ## Architecture
 
 - `main.go`: CLI interface and user interaction loop
-- `orchestrator.go`: Core Ollama API client with streaming and function calling support
-- `tools.go`: File manipulation tools and execution logic
-- `context_manager.go`: Intelligent conversation context and token management
+- `clients/`: Multi-provider client implementations
+  - `interface.go`: Shared types and interfaces
+  - `factory.go`: Client factory with API type detection
+  - `ollama.go`: Ollama API client
+  - `openai.go`: OpenAI-compatible API client
+- `tools.go`: Tool definitions, execution logic, and project detection
+- `context_manager.go`: Conversation context and token management
+- `config.go`: Configuration loading from files and environment variables
+- `ui.go`: Colored diff display and user confirmation
+
+## Testing
+
+Run tests:
+
+```bash
+go test ./...
+```
 
 ## License
 

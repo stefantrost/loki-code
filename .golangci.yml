@@ -1,0 +1,72 @@
+# golangci-lint configuration for loki-code (v2 schema).
+# See the architecture quality plan for rationale.
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - staticcheck   # supersedes gosimple/deadcode/varcheck/structcheck
+    - errcheck      # flag unchecked errors
+    - govet         # standard vet checks
+    - ineffassign   # unused assignments
+    - unused        # unused funcs/vars/types
+    - gosec         # security smells
+    - gocyclo       # cyclomatic complexity
+    - gocognit      # cognitive complexity
+    - misspell
+
+  settings:
+    # Thresholds calibrated against golangci-lint v2's complexity counters,
+    # which are stricter than v1.64.8's. The intent is unchanged: catch *new*
+    # complexity additions, not retroactively flag streaming/REPL code that's
+    # structurally complex by nature.
+    gocyclo:
+      min-complexity: 35
+    gocognit:
+      min-complexity: 55
+    errcheck:
+      # Don't complain about ignored errors in deferred close/cleanup, fmt.Print*,
+      # or best-effort process kill on timeout (we're already on the error path).
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*os.Process).Kill
+        - os.Chdir
+        - fmt.Print
+        - fmt.Println
+        - fmt.Printf
+        - fmt.Fprint
+        - fmt.Fprintln
+        - fmt.Fprintf
+    gosec:
+      # G204 (subprocess from variable) trips on every exec.Command call; the
+      # tools.go whitelist + path validation are the real defense. G304/G703
+      # (file inclusion / path traversal via taint) trip on every read_file /
+      # update_file / config-load call; validatePath is the real defense.
+      excludes:
+        - G204
+        - G304
+        - G703
+
+  exclusions:
+    rules:
+      # Tests routinely use long table-driven cases and don't need complexity gates.
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - gocognit
+          - errcheck
+          - gosec
+      # main() is a flag-handling + signal-handling + REPL entry point that's
+      # structurally a god-function. Splitting it adds indirection without
+      # reducing complexity; carve out an exception rather than chase the metric.
+      - path: main\.go
+        text: "(cognitive|cyclomatic) complexity .* of func `main` "
+        linters:
+          - gocognit
+          - gocyclo

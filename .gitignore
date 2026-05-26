@@ -179,3 +179,7 @@ logs/
 .DS_Store
 
 loki-code
+
+# Quality gate outputs
+cover.out
+cover.html

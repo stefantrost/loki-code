@@ -4,107 +4,297 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
+
+	"loki-code/clients"
 )
 
+func setupLogger(debug bool) {
+	level := slog.LevelInfo
+	if debug {
+		level = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: level,
+	})))
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 func main() {
-	// Command line flags
 	modelFlag := flag.String("model", "", "Model to use (default: qwen3:32b)")
 	modelShort := flag.String("m", "", "Model to use (short form)")
-	ollamaURL := flag.String("url", "http://localhost:11434", "Ollama server URL")
+	baseURL := flag.String("url", "", "API base URL (default: http://localhost:11434 for Ollama)")
+	apiType := flag.String("api-type", "", "API type: ollama, openai, openai-compatible (auto-detected if not specified)")
+	configFile := flag.String("config", "", "Configuration file path (default: llm.env)")
+	bearerToken := flag.String("token", "", "Bearer token for authentication")
 	listModels := flag.Bool("list-models", false, "List available models and exit")
-	
+	debugFlag := flag.Bool("debug", false, "Enable debug logging")
+	conciseFlag := flag.Bool("concise", false, "Start in concise mode (brief responses)")
+	conciseShort := flag.Bool("c", false, "Start in concise mode (short form)")
+	createConfig := flag.Bool("create-config", false, "Create example configuration file")
+
 	flag.Parse()
 
-	// Determine model to use (priority: flag > env > default)
-	modelName := "qwen3:32b" // default
-	
-	// Check environment variable
-	if envModel := os.Getenv("LOKI_MODEL"); envModel != "" {
-		modelName = envModel
-	}
-	
-	// Check command line flags (highest priority)
-	if *modelFlag != "" {
-		modelName = *modelFlag
-	} else if *modelShort != "" {
-		modelName = *modelShort
-	}
+	setupLogger(*debugFlag)
+	slog.Debug("Application started", "debug_enabled", *debugFlag)
 
 	fmt.Println("Loki Code - AI Coding Agent")
-	
-	// Handle --list-models flag
+
+	if *createConfig {
+		configPath := "llm.env"
+		if *configFile != "" {
+			configPath = *configFile
+		}
+
+		if err := CreateExampleConfig(configPath); err != nil {
+			slog.Error("Error creating config file", "error", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("✓ Created example configuration file: %s\n", configPath)
+		fmt.Println("Edit the file with your API settings and run loki-code again.")
+		os.Exit(0)
+	}
+
+	config, err := LoadConfig(*configFile)
+	if err != nil {
+		slog.Error("Error loading configuration", "error", err)
+		fmt.Println("Run 'loki-code --create-config' to create an example configuration file.")
+		os.Exit(1)
+	}
+
+	if *modelFlag != "" {
+		config.ModelName = *modelFlag
+	} else if *modelShort != "" {
+		config.ModelName = *modelShort
+	}
+
+	if *baseURL != "" {
+		config.BaseURL = *baseURL
+	}
+
+	if *apiType != "" {
+		config.APIType = *apiType
+	}
+
+	if *bearerToken != "" {
+		config.BearerToken = *bearerToken
+	}
+
+	if *debugFlag {
+		config.Debug = true
+	}
+
+	PrintConfig(config)
+
+	if err := ValidateAndFixConfig(&config); err != nil {
+		slog.Error("Configuration error", "error", err)
+		os.Exit(1)
+	}
+
 	if *listModels {
 		fmt.Println("Available models:")
-		cmd := exec.Command("ollama", "list")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		err := cmd.Run()
-		if err != nil {
-			fmt.Printf("Error running ollama list: %v\n", err)
-			fmt.Println("Make sure Ollama is installed and running")
-			os.Exit(1)
+		if strings.ToLower(config.APIType) == "ollama" {
+			cmd := exec.Command("ollama", "list")
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			err := cmd.Run()
+			if err != nil {
+				slog.Error("Error running ollama list", "error", err)
+				fmt.Println("Make sure Ollama is installed and running")
+				os.Exit(1)
+			}
+		} else {
+			fmt.Printf("Model listing not supported for API type: %s\n", config.APIType)
+			fmt.Printf("Current configured model: %s\n", config.ModelName)
 		}
 		os.Exit(0)
 	}
-	
-	fmt.Printf("Connecting to Ollama (%s)...\n", modelName)
 
-	client := NewOllamaClient(*ollamaURL, modelName)
-	
-	fmt.Println("Type 'exit', 'quit' to stop, '/plan' to enter plan mode, '/execute' to exit plan mode, or press Ctrl+C")
+	fmt.Printf("Connecting to %s API (%s)...\n", config.APIType, config.ModelName)
+
+	// Create context manager with tool provider callback
+	ctxMgr := NewContextManager(4000, GetAvailableTools)
+
+	// Create client with callbacks
+	client, err := clients.CreateClient(config, ctxMgr, ExecuteToolWithPlanMode, GetAvailableTools)
+	if err != nil {
+		slog.Error("Error creating client", "error", err)
+		os.Exit(1)
+	}
+	client.SetTruncator(SmartTruncate)
+
+	// Detect and set context window
+	if contextWindow, err := client.DetectContextWindow(); err == nil {
+		ctxMgr.SetMaxTokens(contextWindow)
+		fmt.Printf("✓ Detected context window: %d tokens (auto-compact at 75%%)\n", contextWindow)
+	} else {
+		fmt.Printf("⚠️ Could not detect context window: %v\n", err)
+		fmt.Printf("✓ Using default context limit: 4,000 tokens\n")
+	}
+
+	if *conciseFlag || *conciseShort {
+		client.EnableConciseMode()
+	}
+
+	fmt.Println("Type 'exit', 'quit' to stop, '/plan' to enter plan mode, '/execute' to exit plan mode")
+	fmt.Println("Commands: /stats, /clear, /compact, /concise, /verbose, /mode")
+	fmt.Println("Tasks: /task [description], /task (show current), /complete")
+	fmt.Println("Press Ctrl+C during response to interrupt (or at prompt to exit)")
 	fmt.Println("----------------------------------------")
 
-	// Handle Ctrl+C gracefully
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
-		<-c
-		fmt.Println("\nGoodbye!")
-		os.Exit(0)
+		<-sigChan
+		if client.IsResponseActive() {
+			fmt.Println("\n^C [Response interrupted]")
+			client.Interrupt()
+		} else {
+			fmt.Println("\nGoodbye!")
+			os.Exit(0)
+		}
 	}()
 
-	scanner := bufio.NewScanner(os.Stdin)
+	scanner := bufio.NewScanner(uiInput)
 
 	for {
+		prompt := "\n> "
 		if client.IsInPlanMode() {
-			fmt.Print("\n[PLAN] > ")
-		} else {
-			fmt.Print("\n> ")
+			prompt = "\n[PLAN] > "
 		}
-		
+		if client.IsInConciseMode() {
+			prompt = strings.Replace(prompt, "> ", "[CONCISE] > ", 1)
+		}
+		fmt.Print(prompt)
+
 		if !scanner.Scan() {
 			break
 		}
 
 		input := strings.TrimSpace(scanner.Text())
-		
+
 		if input == "" {
 			continue
 		}
 
+		slog.Debug("User input received", "input_length", len(input), "input_preview", truncateString(input, 200))
+
 		if input == "exit" || input == "quit" {
+			slog.Debug("User requested exit")
 			fmt.Println("Goodbye!")
 			break
 		}
 
 		if input == "/clear" {
+			slog.Debug("Clearing context")
 			client.ClearContext()
 			fmt.Println("Context cleared!")
 			continue
 		}
 
 		if input == "/stats" {
-			tokens, messages, maxTokens := client.GetContextStats()
+			tokens, messages, maxTokens := client.GetStats()
 			mode := "Execute"
 			if client.IsInPlanMode() {
 				mode = "Plan"
 			}
-			fmt.Printf("Context Stats: %d/%d tokens, %d messages | Mode: %s\n", tokens, maxTokens, messages, mode)
+			responseMode := "Verbose"
+			if client.IsInConciseMode() {
+				responseMode = "Concise"
+			}
+
+			activeTask := client.GetActiveTask()
+			taskInfo := "None"
+			if activeTask != "" {
+				taskInfo = "Active"
+			}
+
+			slog.Debug("Stats requested", "tokens", tokens, "max_tokens", maxTokens, "messages", messages,
+				"mode", mode, "response_mode", responseMode, "task", taskInfo)
+			fmt.Printf("Context Stats: %d/%d tokens, %d messages | Mode: %s | Response: %s | Task: %s\n",
+				tokens, maxTokens, messages, mode, responseMode, taskInfo)
+			continue
+		}
+
+		if input == "/concise" {
+			if client.IsInConciseMode() {
+				fmt.Println("Already in concise mode!")
+				continue
+			}
+			slog.Debug("Enabling concise mode")
+			client.EnableConciseMode()
+			fmt.Println("📝 Switched to concise mode - responses will be brief and to-the-point")
+			continue
+		}
+
+		if input == "/verbose" {
+			if !client.IsInConciseMode() {
+				fmt.Println("Already in verbose mode!")
+				continue
+			}
+			slog.Debug("Disabling concise mode")
+			client.DisableConciseMode()
+			fmt.Println("📝 Switched to verbose mode - responses will include detailed explanations")
+			continue
+		}
+
+		if input == "/mode" {
+			mode := "verbose"
+			if client.IsInConciseMode() {
+				mode = "concise"
+			}
+			planMode := ""
+			if client.IsInPlanMode() {
+				planMode = " (plan mode active)"
+			}
+			slog.Debug("Mode requested", "mode", mode, "plan_mode", client.IsInPlanMode())
+			fmt.Printf("Current response mode: %s%s\n", mode, planMode)
+			continue
+		}
+
+		if input == "/task" {
+			activeTask := client.GetActiveTask()
+			slog.Debug("Task requested", "has_active_task", activeTask != "")
+			if activeTask != "" {
+				fmt.Printf("🎯 Current task: %s\n", activeTask)
+			} else {
+				fmt.Println("No active task")
+			}
+			continue
+		}
+
+		if input == "/complete" {
+			activeTask := client.GetActiveTask()
+			slog.Debug("Complete task requested", "has_active_task", activeTask != "")
+			if activeTask != "" {
+				client.CompleteCurrentTask()
+				fmt.Println("✅ Task marked as complete")
+			} else {
+				fmt.Println("No active task to complete")
+			}
+			continue
+		}
+
+		if strings.HasPrefix(input, "/task ") {
+			newTask := strings.TrimPrefix(input, "/task ")
+			if strings.TrimSpace(newTask) != "" {
+				slog.Debug("Setting new task", "task", newTask)
+				client.SetActiveTask(newTask)
+			} else {
+				fmt.Println("Please specify a task: /task <description>")
+			}
 			continue
 		}
 
@@ -113,9 +303,10 @@ func main() {
 				fmt.Println("Context not ready for compacting (need 60%+ token usage)")
 				continue
 			}
+			slog.Debug("Compacting context requested")
 			fmt.Println("Compacting conversation context...")
 			if err := client.CompactContext(); err != nil {
-				fmt.Printf("Compacting failed: %v\n", err)
+				slog.Error("Compacting failed", "error", err)
 			}
 			continue
 		}
@@ -125,6 +316,7 @@ func main() {
 				fmt.Println("Already in plan mode!")
 				continue
 			}
+			slog.Debug("Enabling plan mode")
 			client.EnablePlanMode()
 			fmt.Println("🎯 Plan Mode Activated!")
 			fmt.Println("You can now create execution plans. Only read operations are allowed.")
@@ -137,19 +329,28 @@ func main() {
 				fmt.Println("Not in plan mode!")
 				continue
 			}
+			slog.Debug("Disabling plan mode")
 			client.DisablePlanMode()
 			fmt.Println("⚡ Execute Mode Activated!")
 			fmt.Println("All tools are now available for execution.")
 			continue
 		}
 
+		slog.Debug("Processing user message", "input_length", len(input))
 		fmt.Print("Assistant: ")
 		if err := client.StreamChat(input); err != nil {
-			fmt.Printf("Error: %v\n", err)
+			slog.Error("StreamChat error", "error", err)
+		}
+
+		if client.CanCompact() {
+			fmt.Println("⚡ Context at 75% — auto-compacting...")
+			if err := client.CompactContext(); err != nil {
+				slog.Warn("Auto-compact failed", "error", err)
+			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Printf("Error reading input: %v\n", err)
+		slog.Error("Error reading input", "error", err)
 	}
 }
