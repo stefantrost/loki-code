@@ -1,4 +1,4 @@
-package main
+package session
 
 import (
 	"fmt"
@@ -54,7 +54,7 @@ func (t *taskTracker) get() *clients.UserTask {
 	return &task
 }
 
-// detectFromUser inspects an incoming user message and returns a new task if
+// detectTaskFromUser inspects an incoming user message and returns a new task if
 // the message looks like a coding request rather than a quick question. This
 // is a deliberately fuzzy keyword heuristic; callers decide whether to adopt
 // the returned task as the active one.

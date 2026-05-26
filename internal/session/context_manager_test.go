@@ -1,8 +1,9 @@
-package main
+package session
 
 import (
 	"loki-code/clients"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -34,12 +35,10 @@ func TestContextManagerAddAndGetMessages(t *testing.T) {
 	cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: "hi there"})
 
 	messages := cm.GetMessages()
-	// Should have system prompt + 2 messages
 	if len(messages) != 3 {
 		t.Errorf("expected 3 messages (system + 2), got %d", len(messages))
 	}
 
-	// First message should be system prompt
 	if messages[0].Role != "system" {
 		t.Errorf("first message role = %q, want %q", messages[0].Role, "system")
 	}
@@ -58,7 +57,6 @@ func TestContextManagerClear(t *testing.T) {
 	cm.Clear()
 	messages := cm.GetMessages()
 
-	// Should only have system prompt after clear
 	if len(messages) != 1 {
 		t.Errorf("expected 1 message after clear (system prompt), got %d", len(messages))
 	}
@@ -165,21 +163,16 @@ func TestContextManagerDetectUserTask(t *testing.T) {
 
 	cm := NewContextManager(10000, provider)
 
-	// Should detect task
 	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "implement a login system"})
 	task := cm.GetActiveTask()
 	if task == nil {
 		t.Error("expected task to be detected from user message")
 	}
 
-	// Clear and test simple question (should not detect)
 	cm.Clear()
-	cm.SetActiveTask("") // Reset
+	cm.SetActiveTask("")
 
-	// Test with simple question pattern
 	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "what is go?"})
-	// Simple questions should not create tasks
-	// Note: This depends on the detectUserTask implementation
 }
 
 func TestContextManagerToolCallsInProgress(t *testing.T) {
@@ -189,14 +182,12 @@ func TestContextManagerToolCallsInProgress(t *testing.T) {
 
 	cm := NewContextManager(10000, provider)
 
-	// No tool calls in progress initially
 	if cm.HasToolCallsInProgress() {
 		t.Error("expected no tool calls in progress initially")
 	}
 
-	// Add assistant message with tool calls but no results
 	cm.AddMessage(clients.ChatMessage{
-		Role: "assistant",
+		Role:    "assistant",
 		Content: "I'll help with that",
 		ToolCalls: []clients.ToolCall{
 			{Function: clients.ToolFunc{Name: "read_file"}},
@@ -207,7 +198,6 @@ func TestContextManagerToolCallsInProgress(t *testing.T) {
 		t.Error("expected tool calls to be in progress")
 	}
 
-	// Add tool result - calls are now resolved
 	cm.AddMessage(clients.ChatMessage{Role: "tool", Content: "file contents here"})
 
 	if cm.HasToolCallsInProgress() {
@@ -222,7 +212,6 @@ func TestContextManagerMessagesAccumulate(t *testing.T) {
 
 	cm := NewContextManager(100, provider)
 
-	// smartTrim was removed; messages now accumulate until compaction.
 	for i := 0; i < 10; i++ {
 		cm.AddMessage(clients.ChatMessage{Role: "user", Content: "word"})
 		cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: "ok"})
@@ -255,7 +244,6 @@ func TestContextManagerCompactCannotCompactTooFewMessages(t *testing.T) {
 
 	cm := NewContextManager(10000, provider)
 
-	// Add only 2 messages - not enough to compact
 	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "hello"})
 	cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: "hi"})
 
@@ -314,7 +302,6 @@ func TestContextManagerCompactSuccess(t *testing.T) {
 
 	cm := NewContextManager(10000, provider)
 
-	// Add enough messages to allow compaction (need 60%+ token usage)
 	for i := 0; i < 20; i++ {
 		cm.AddMessage(clients.ChatMessage{Role: "user", Content: strings.Repeat("word ", 100)})
 		cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: strings.Repeat("response ", 100)})
@@ -329,7 +316,6 @@ func TestContextManagerCompactSuccess(t *testing.T) {
 	}
 
 	messages := cm.GetMessages()
-	// Should have system prompt + 1 summary + recent messages
 	if len(messages) < 2 {
 		t.Errorf("expected at least 2 messages after compact, got %d", len(messages))
 	}
@@ -381,7 +367,6 @@ func TestContextManagerTaskHistory(t *testing.T) {
 	cm.SetActiveTask("second task")
 	cm.CompleteCurrentTask("second task done")
 
-	// Task history should contain completed tasks
 	if len(cm.tasks.history) != 2 {
 		t.Errorf("task history length = %d, want 2", len(cm.tasks.history))
 	}
@@ -505,9 +490,8 @@ func TestContextManagerToolCallPreservation(t *testing.T) {
 
 	cm := NewContextManager(10000, provider)
 
-	// Add assistant message with tool calls
 	cm.AddMessage(clients.ChatMessage{
-		Role: "assistant",
+		Role:    "assistant",
 		Content: "I'll use tools",
 		ToolCalls: []clients.ToolCall{
 			{
@@ -520,9 +504,8 @@ func TestContextManagerToolCallPreservation(t *testing.T) {
 		},
 	})
 
-	// Verify tool calls are preserved
 	messages := cm.GetMessages()
-	assistantMsg := messages[1] // Skip system prompt
+	assistantMsg := messages[1]
 
 	if len(assistantMsg.ToolCalls) != 1 {
 		t.Errorf("expected 1 tool call, got %d", len(assistantMsg.ToolCalls))
@@ -539,7 +522,6 @@ func TestContextManagerTokenEstimation(t *testing.T) {
 
 	cm := NewContextManager(10000, provider)
 
-	// Add a message with known content
 	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "hello world"})
 
 	tokens, _, _ := cm.GetStats()
@@ -547,7 +529,6 @@ func TestContextManagerTokenEstimation(t *testing.T) {
 		t.Error("token count should be > 0")
 	}
 
-	// Add another message
 	cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: "hi there"})
 
 	tokens2, _, _ := cm.GetStats()
@@ -566,14 +547,12 @@ func TestContextManagerUpdateTokenCount(t *testing.T) {
 		t.Fatal("heuristic estimate should be > 0")
 	}
 
-	// After a real count arrives, GetStats should return it instead of the estimate.
 	cm.UpdateTokenCount(1234)
 	real, _, _ := cm.GetStats()
 	if real != 1234 {
 		t.Errorf("GetStats() = %d, want 1234 (real count)", real)
 	}
 
-	// Non-positive updates must be ignored.
 	cm.UpdateTokenCount(0)
 	after, _, _ := cm.GetStats()
 	if after != 1234 {
@@ -585,17 +564,15 @@ func TestContextManagerCanCompact(t *testing.T) {
 	provider := func() []clients.Tool { return nil }
 	cm := NewContextManager(1000, provider)
 
-	// Too few messages (system + 2 pairs = 5 < compactionMinMessages=6).
 	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "msg"})
 	cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: "ok"})
 	cm.AddMessage(clients.ChatMessage{Role: "user", Content: "msg"})
 	cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: "ok"})
-	cm.UpdateTokenCount(800) // 80% of 1000 — above threshold, but not enough messages
+	cm.UpdateTokenCount(800)
 	if cm.CanCompact() {
 		t.Error("CanCompact() = true with only 5 messages (system+4), want false")
 	}
 
-	// Add enough messages to pass the minimum (system + 6 pairs = 13 >= 6).
 	for i := 0; i < 6; i++ {
 		cm.AddMessage(clients.ChatMessage{Role: "user", Content: "msg"})
 		cm.AddMessage(clients.ChatMessage{Role: "assistant", Content: "ok"})
@@ -605,9 +582,49 @@ func TestContextManagerCanCompact(t *testing.T) {
 		t.Error("CanCompact() = false with real count at 80% and enough messages, want true")
 	}
 
-	// Below threshold.
-	cm.UpdateTokenCount(500) // 50% — below 75%
+	cm.UpdateTokenCount(500)
 	if cm.CanCompact() {
 		t.Error("CanCompact() = true with real count at 50%, want false")
+	}
+}
+
+// TestContextManagerConcurrentAccess exercises the RWMutex added to
+// ContextManager. Run with -race to surface any remaining sharing of state.
+func TestContextManagerConcurrentAccess(t *testing.T) {
+	provider := func() []clients.Tool { return nil }
+	cm := NewContextManager(10000, provider)
+
+	var wg sync.WaitGroup
+	const goroutines = 8
+	const iterations = 100
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				cm.AddMessage(clients.ChatMessage{Role: "user", Content: "hello"})
+				_ = cm.GetMessages()
+				_, _, _ = cm.GetStats()
+				cm.SetPlanMode(id%2 == 0)
+				_ = cm.IsInPlanMode()
+				cm.SetActiveTask("test")
+				_ = cm.GetActiveTask()
+			}
+		}(g)
+	}
+	wg.Wait()
+}
+
+// TestDetectCompletionPhraseNoActiveTask makes sure completion phrase detection
+// without an active task is a no-op rather than a crash.
+func TestDetectCompletionPhraseNoActiveTask(t *testing.T) {
+	provider := func() []clients.Tool { return nil }
+	cm := NewContextManager(10000, provider)
+	cm.AddMessage(clients.ChatMessage{
+		Role:    "assistant",
+		Content: "analysis complete - here are the findings",
+	})
+	if task := cm.GetActiveTask(); task != nil {
+		t.Errorf("expected no active task, got %+v", task)
 	}
 }

@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"fmt"
@@ -6,14 +6,22 @@ import (
 	"strings"
 
 	"loki-code/clients"
+	"loki-code/internal/ui"
 )
 
 // Confirmation hooks for mutating tools. Tests override these to bypass
 // interactive prompts; the defaults read from stdin via the ui helpers.
 var (
-	confirmYN   = promptUser
-	confirmDiff = showDiffAndConfirm
+	confirmYN   = ui.PromptUser
+	confirmDiff = ui.ShowDiffAndConfirm
 )
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
 
 // SmartTruncate is a TruncationPolicy that knows which tools produce
 // line-oriented output (list_files / find_files) and trims at line boundaries
@@ -26,9 +34,9 @@ func SmartTruncate(result, toolName string) string {
 	}
 	switch toolName {
 	case "read_file":
-		return result[:maxLength-100] + fmt.Sprintf(
-			"\n\n... (file content truncated - showing first %d characters of %d total)",
-			maxLength-100, len(result))
+		return result[:maxLength-150] + fmt.Sprintf(
+			"\n\n... (truncated at %d chars — call read_file again with offset=%d to continue)",
+			maxLength-150, maxLength-150)
 	case "list_files", "find_files":
 		lines := strings.Split(result, "\n")
 		var kept []string
@@ -77,7 +85,7 @@ func GetAvailableTools() []clients.Tool {
 			Type: "function",
 			Function: clients.ToolFunc{
 				Name:        "read_file",
-				Description: "Read the contents of a file",
+				Description: "Read the contents of a file. For large files use offset and length to page through the content.",
 				Arguments: map[string]interface{}{
 					"path": map[string]interface{}{
 						"type":        "string",

@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"os"
@@ -40,9 +40,9 @@ func TestValidatePath(t *testing.T) {
 
 func TestIsToolAllowedInPlanMode(t *testing.T) {
 	tests := []struct {
-		name      string
-		toolName  string
-		allowed   bool
+		name     string
+		toolName string
+		allowed  bool
 	}{
 		{"read_file is allowed", "read_file", true},
 		{"list_files is allowed", "list_files", true},
@@ -91,7 +91,6 @@ func TestExecuteCreateFile(t *testing.T) {
 		t.Errorf("executeCreateFile result = %q, want %q", result, expected)
 	}
 
-	// Verify file was actually created
 	data, err := os.ReadFile(filepath.Join(tmpDir, path))
 	if err != nil {
 		t.Fatalf("failed to read created file: %v", err)
@@ -134,7 +133,6 @@ func TestExecuteReadFile(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(oldWd)
 
-	// Create a test file
 	testFile := filepath.Join(tmpDir, "test.txt")
 	expectedContent := "read me content"
 	os.WriteFile(testFile, []byte(expectedContent), 0644)
@@ -172,7 +170,6 @@ func TestExecuteListFiles(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(oldWd)
 
-	// Create some test files
 	os.WriteFile(tmpDir+"file1.txt", []byte("a"), 0644)
 	os.WriteFile(tmpDir+"file2.txt", []byte("b"), 0644)
 	os.Mkdir(tmpDir+"subdir", 0755)
@@ -188,7 +185,6 @@ func TestExecuteListFiles(t *testing.T) {
 }
 
 func TestAllowedCommands(t *testing.T) {
-	// Verify command whitelist contains expected commands
 	expected := []string{"find", "grep", "pwd", "tree", "wc", "sort", "uniq", "whoami", "date", "which"}
 	for _, cmd := range expected {
 		if !allowedCommands[cmd] {
@@ -196,7 +192,6 @@ func TestAllowedCommands(t *testing.T) {
 		}
 	}
 
-	// Verify dangerous commands are not allowed
 	dangerous := []string{"rm", "curl", "wget", "bash", "sh", "python", "node"}
 	for _, cmd := range dangerous {
 		if allowedCommands[cmd] {
@@ -276,7 +271,6 @@ func TestExecuteDeleteFile(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(oldWd)
 
-	// Create a test file
 	testFile := "test_delete.txt"
 	os.WriteFile(testFile, []byte("delete me"), 0644)
 
@@ -293,7 +287,6 @@ func TestExecuteDeleteFile(t *testing.T) {
 		t.Errorf("executeDeleteFile result = %q, want %q", result, expected)
 	}
 
-	// Verify file was actually deleted
 	if _, err := os.Stat(testFile); !os.IsNotExist(err) {
 		t.Error("file should have been deleted")
 	}
@@ -315,11 +308,9 @@ func TestExecuteUpdateFile(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(oldWd)
 
-	// Create a test file
 	testFile := "test_update.txt"
 	os.WriteFile(testFile, []byte("original content"), 0644)
 
-	// Test with identical content (no confirmation needed)
 	result, err := executeUpdateFile(map[string]interface{}{
 		"path":    testFile,
 		"content": "original content",
@@ -334,7 +325,6 @@ func TestExecuteUpdateFile(t *testing.T) {
 		t.Errorf("executeUpdateFile result = %q, want %q", result, expected)
 	}
 
-	// Verify file content unchanged
 	data, err := os.ReadFile(testFile)
 	if err != nil {
 		t.Fatalf("failed to read file: %v", err)
@@ -402,7 +392,6 @@ func TestExecuteFindFiles(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(oldWd)
 
-	// Create some test files
 	os.WriteFile(tmpDir+"test1.txt", []byte("a"), 0644)
 	os.WriteFile(tmpDir+"test2.txt", []byte("b"), 0644)
 
@@ -444,7 +433,6 @@ func TestExecuteGrepContent(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(oldWd)
 
-	// Create a test file
 	testFile := "test_grep.txt"
 	os.WriteFile(testFile, []byte("hello world\nfoo bar"), 0644)
 
@@ -468,7 +456,6 @@ func TestExecuteGrepContentNoMatch(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(oldWd)
 
-	// Create a test file
 	testFile := "test_grep2.txt"
 	os.WriteFile(testFile, []byte("hello world"), 0644)
 
@@ -492,7 +479,6 @@ func TestExecuteTreeView(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(oldWd)
 
-	// Create some test files
 	os.WriteFile(tmpDir+"file1.txt", []byte("a"), 0644)
 	os.Mkdir(tmpDir+"subdir", 0755)
 
@@ -508,7 +494,6 @@ func TestExecuteTreeView(t *testing.T) {
 }
 
 func TestExecuteToolWithPlanMode(t *testing.T) {
-	// Test that create_file is blocked in plan mode
 	toolCall := clients.ToolCall{
 		Function: clients.ToolFunc{
 			Name: "create_file",
@@ -535,11 +520,9 @@ func TestExecuteToolWithPlanModeReadAllowed(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(oldWd)
 
-	// Create a test file
 	testFile := "test_plan.txt"
 	os.WriteFile(testFile, []byte("plan test"), 0644)
 
-	// Test that read_file is allowed in plan mode
 	toolCall := clients.ToolCall{
 		Function: clients.ToolFunc{
 			Name: "read_file",
@@ -578,7 +561,6 @@ func TestDetectProjectGo(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(oldWd)
 
-	// Create go.mod
 	os.WriteFile("go.mod", []byte("module test"), 0644)
 
 	projectInfo := detectProject()
@@ -596,7 +578,6 @@ func TestDetectProjectNode(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(oldWd)
 
-	// Create package.json
 	os.WriteFile("package.json", []byte(`{"name": "test"}`), 0644)
 
 	projectInfo := detectProject()
@@ -611,7 +592,6 @@ func TestDetectProjectPython(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(oldWd)
 
-	// Create requirements.txt
 	os.WriteFile("requirements.txt", []byte("flask"), 0644)
 
 	projectInfo := detectProject()
@@ -638,7 +618,6 @@ func TestDetectTypeScriptProject(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(oldWd)
 
-	// Create package.json and tsconfig.json
 	os.WriteFile("package.json", []byte(`{"name": "test"}`), 0644)
 	os.WriteFile("tsconfig.json", []byte(`{"compilerOptions": {}}`), 0644)
 

@@ -30,7 +30,10 @@
       "Bash(pkill:*)",
       "Bash(cp:*)",
       "Bash(sed:*)",
-      "Bash(go build:*)"
+      "Bash(go build:*)",
+      "Bash(go test *)",
+      "Bash(make cover-update *)",
+      "Bash(make quick *)"
     ],
     "deny": []
   }

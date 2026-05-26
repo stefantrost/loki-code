@@ -5,13 +5,14 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"os/exec"
 
 	"loki-code/clients"
+	"loki-code/internal/tools"
 )
 
 // repoRoot returns the working tree root (cwd, since these tests run from the
@@ -51,8 +52,8 @@ func listGoFiles(t *testing.T, root string) []string {
 	return out
 }
 
-// TestArchitecture_DepDirection locks in the one-way main → clients
-// dependency. The clients/ package must not import the root module.
+// TestArchitecture_DepDirection locks in the one-way dependency rule.
+// clients/ must not import the root module or any internal package.
 func TestArchitecture_DepDirection(t *testing.T) {
 	out, err := exec.Command("go", "list", "-deps", "loki-code/clients").Output()
 	if err != nil {
@@ -61,6 +62,9 @@ func TestArchitecture_DepDirection(t *testing.T) {
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if line == "loki-code" {
 			t.Fatalf("clients/ imports loki-code (root) — direction must stay main → clients")
+		}
+		if strings.HasPrefix(line, "loki-code/internal/") {
+			t.Fatalf("clients/ imports %s — clients/ must not depend on internal packages", line)
 		}
 	}
 }
@@ -89,19 +93,27 @@ func TestArchitecture_FileSizeBudget(t *testing.T) {
 // GetAvailableTools() agree on the set of tools. Catches the open/closed gap
 // where adding to one but not the other would silently break dispatch.
 func TestArchitecture_RegistryCompleteness(t *testing.T) {
-	tools := GetAvailableTools()
+	toolList := tools.GetAvailableTools()
 	schemaNames := map[string]struct{}{}
-	for _, tl := range tools {
+	for _, tl := range toolList {
 		schemaNames[tl.Function.Name] = struct{}{}
 	}
 
-	for name := range toolRegistry {
+	registryNames := tools.ToolNames()
+	for _, name := range registryNames {
 		if _, ok := schemaNames[name]; !ok {
 			t.Errorf("toolRegistry has %q but GetAvailableTools() does not", name)
 		}
 	}
 	for name := range schemaNames {
-		if _, ok := toolRegistry[name]; !ok {
+		found := false
+		for _, rn := range registryNames {
+			if rn == name {
+				found = true
+				break
+			}
+		}
+		if !found {
 			t.Errorf("GetAvailableTools() has %q but toolRegistry does not", name)
 		}
 	}
@@ -109,8 +121,6 @@ func TestArchitecture_RegistryCompleteness(t *testing.T) {
 
 // TestArchitecture_NoDuplicateModeState ensures the LLM clients delegate plan
 // and concise mode to the ContextManager rather than holding their own copy.
-// The pre-refactor implementation duplicated this state and drifted under
-// concurrent toggles.
 func TestArchitecture_NoDuplicateModeState(t *testing.T) {
 	forbidden := map[string]struct{}{"planMode": {}, "conciseMode": {}}
 	for _, target := range []reflect.Type{
@@ -128,12 +138,11 @@ func TestArchitecture_NoDuplicateModeState(t *testing.T) {
 }
 
 // TestArchitecture_NoTerminalCouplingOutsideUI restricts os.Stdin / os.Stdout
-// imports to ui.go and main.go. Other files must go through uiInput or the
-// confirmation hooks so they remain testable.
+// imports to internal/ui/ui.go and main.go.
 func TestArchitecture_NoTerminalCouplingOutsideUI(t *testing.T) {
 	allowed := map[string]bool{
-		filepath.Join(repoRoot(t), "ui.go"):   true,
-		filepath.Join(repoRoot(t), "main.go"): true,
+		filepath.Join(repoRoot(t), "internal", "ui", "ui.go"): true,
+		filepath.Join(repoRoot(t), "main.go"):                  true,
 	}
 	fset := token.NewFileSet()
 	for _, path := range listGoFiles(t, repoRoot(t)) {
@@ -163,13 +172,9 @@ func TestArchitecture_NoTerminalCouplingOutsideUI(t *testing.T) {
 }
 
 // TestArchitecture_NoToolNamesInClients ensures the clients/ package stays
-// generic. Hard-coding a tool name there (as the old truncateToolResult did)
-// couples transport to product. Tool-specific policy belongs in tools.go.
+// generic. Hard-coding a tool name there couples transport to product.
 func TestArchitecture_NoToolNamesInClients(t *testing.T) {
-	toolNames := []string{}
-	for name := range toolRegistry {
-		toolNames = append(toolNames, name)
-	}
+	toolNameList := tools.ToolNames()
 	root := filepath.Join(repoRoot(t), "clients")
 	fset := token.NewFileSet()
 	for _, path := range listGoFiles(t, root) {
@@ -186,7 +191,7 @@ func TestArchitecture_NoToolNamesInClients(t *testing.T) {
 				return true
 			}
 			val := strings.Trim(lit.Value, "`\"")
-			for _, name := range toolNames {
+			for _, name := range toolNameList {
 				if val == name {
 					t.Errorf("%s:%d: tool name literal %q in clients/ — move policy to tools.go",
 						path, fset.Position(lit.Pos()).Line, val)
@@ -199,8 +204,7 @@ func TestArchitecture_NoToolNamesInClients(t *testing.T) {
 
 // TestArchitecture_NoThirdPartyDeps keeps the module stdlib-only. A new
 // require directive in go.mod must be a deliberate decision, opted in via a
-// trailing `// allow: <reason>` comment on the line. Without that marker this
-// test fails so a casual `go get` can't sneak a dependency in.
+// trailing `// allow: <reason>` comment on the line.
 func TestArchitecture_NoThirdPartyDeps(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repoRoot(t), "go.mod"))
 	if err != nil {
@@ -233,13 +237,6 @@ func TestArchitecture_NoThirdPartyDeps(t *testing.T) {
 
 // TestArchitecture_StructCohesion looks at every method on the public client
 // types and asserts each method references at least one field of its receiver.
-// A method that uses none of the struct's fields is a hint that the type is
-// turning into a utility bag.
-//
-// Best-effort by reflection on a constructed instance; methods that only call
-// promoted (embedded) fields will look like field-free callers, so this test
-// is informational — it should never fire today, but if it does, treat the
-// finding as a prompt to ask whether the method belongs elsewhere.
 func TestArchitecture_StructCohesion(t *testing.T) {
 	ctx := &fakeContextManager{}
 	cases := []reflect.Value{

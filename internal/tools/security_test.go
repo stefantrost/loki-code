@@ -1,12 +1,9 @@
-package main
+package tools
 
 import (
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
-
-	"loki-code/clients"
 )
 
 // TestValidatePath_NestedTraversal covers traversal sequences where ".." sits
@@ -46,8 +43,8 @@ func TestValidateURL_DockerBridge(t *testing.T) {
 	urls := []string{
 		"http://172.17.0.1/api",
 		"http://172.20.5.5/",
-		"http://[fc00::1]/",   // IPv6 ULA
-		"http://[fe80::1]/",   // IPv6 link-local
+		"http://[fc00::1]/",              // IPv6 ULA
+		"http://[fe80::1]/",              // IPv6 link-local
 		"http://169.254.169.254/latest/meta-data/", // AWS metadata
 	}
 	for _, u := range urls {
@@ -65,46 +62,5 @@ func TestValidateURL_DockerBridge(t *testing.T) {
 func TestValidateURL_PublicAllowed(t *testing.T) {
 	if err := validateURL("https://example.com/path"); err != nil {
 		t.Errorf("expected example.com to pass, got %v", err)
-	}
-}
-
-// TestContextManagerConcurrentAccess exercises the RWMutex added to
-// ContextManager. Run with -race to surface any remaining sharing of state.
-func TestContextManagerConcurrentAccess(t *testing.T) {
-	provider := func() []clients.Tool { return nil }
-	cm := NewContextManager(10000, provider)
-
-	var wg sync.WaitGroup
-	const goroutines = 8
-	const iterations = 100
-	for g := 0; g < goroutines; g++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			for i := 0; i < iterations; i++ {
-				cm.AddMessage(clients.ChatMessage{Role: "user", Content: "hello"})
-				_ = cm.GetMessages()
-				_, _, _ = cm.GetStats()
-				cm.SetPlanMode(id%2 == 0)
-				_ = cm.IsInPlanMode()
-				cm.SetActiveTask("test")
-				_ = cm.GetActiveTask()
-			}
-		}(g)
-	}
-	wg.Wait()
-}
-
-// TestDetectCompletionPhraseNoActiveTask makes sure completion phrase detection
-// without an active task is a no-op rather than a crash.
-func TestDetectCompletionPhraseNoActiveTask(t *testing.T) {
-	provider := func() []clients.Tool { return nil }
-	cm := NewContextManager(10000, provider)
-	cm.AddMessage(clients.ChatMessage{
-		Role:    "assistant",
-		Content: "analysis complete - here are the findings",
-	})
-	if task := cm.GetActiveTask(); task != nil {
-		t.Errorf("expected no active task, got %+v", task)
 	}
 }

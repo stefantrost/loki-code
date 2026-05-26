@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"bufio"
@@ -11,30 +11,27 @@ import (
 	"loki-code/clients"
 )
 
-// LoadConfig loads configuration from file and environment variables
+// LoadConfig loads configuration from file and environment variables.
 func LoadConfig(configFilePath string) (clients.ClientConfig, error) {
 	config := clients.ClientConfig{}
-	
-	// Set defaults
+
 	config.APIType = "ollama"
 	config.BaseURL = "http://localhost:11434"
 	config.ModelName = "qwen3:32b"
-	
-	// Try to load from config file
+
 	if configFilePath != "" {
 		if err := loadConfigFromFile(configFilePath, &config); err != nil {
 			return config, fmt.Errorf("failed to load config file %s: %v", configFilePath, err)
 		}
 	} else {
-		// Try default locations
 		defaultPaths := []string{
 			"llm.env",
 			".env",
 			filepath.Join(os.Getenv("HOME"), ".loki-code", "config.env"),
 		}
-		
+
 		for _, path := range defaultPaths {
-			if configFileExists(path) {
+			if fileExists(path) {
 				if err := loadConfigFromFile(path, &config); err != nil {
 					slog.Warn("Failed to load config file", "file", path, "error", err)
 				} else {
@@ -44,55 +41,48 @@ func LoadConfig(configFilePath string) (clients.ClientConfig, error) {
 			}
 		}
 	}
-	
-	// Override with environment variables
+
 	loadConfigFromEnv(&config)
-	
-	// Auto-detect API type if not specified
+
 	if config.APIType == "" || config.APIType == "auto" {
 		config.APIType = clients.DetectAPIType(config.BaseURL)
 	}
-	
+
 	return config, nil
 }
 
-// loadConfigFromFile loads configuration from a .env style file
 func loadConfigFromFile(filePath string, config *clients.ClientConfig) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	
+
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
-	
+
 	for scanner.Scan() {
 		lineNum++
 		line := strings.TrimSpace(scanner.Text())
-		
-		// Skip empty lines and comments
+
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		
-		// Parse KEY=VALUE format
+
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) != 2 {
 			slog.Warn("Invalid config format", "file", filePath, "line", lineNum, "content", line)
 			continue
 		}
-		
+
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
-		
-		// Remove surrounding quotes if present
+
 		if (strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`)) ||
-		   (strings.HasPrefix(value, `'`) && strings.HasSuffix(value, `'`)) {
+			(strings.HasPrefix(value, `'`) && strings.HasSuffix(value, `'`)) {
 			value = value[1 : len(value)-1]
 		}
-		
-		// Set configuration values
+
 		switch strings.ToUpper(key) {
 		case "API_TYPE":
 			config.APIType = value
@@ -108,11 +98,10 @@ func loadConfigFromFile(filePath string, config *clients.ClientConfig) error {
 			slog.Warn("Unknown configuration key", "file", filePath, "key", key)
 		}
 	}
-	
+
 	return scanner.Err()
 }
 
-// loadConfigFromEnv loads configuration from environment variables
 func loadConfigFromEnv(config *clients.ClientConfig) {
 	if value := os.Getenv("LOKI_API_TYPE"); value != "" {
 		config.APIType = value
@@ -129,8 +118,7 @@ func loadConfigFromEnv(config *clients.ClientConfig) {
 	if value := os.Getenv("LOKI_DEBUG"); value != "" {
 		config.Debug = strings.ToLower(value) == "true" || value == "1"
 	}
-	
-	// Also check common OpenAI environment variables
+
 	if value := os.Getenv("OPENAI_API_KEY"); value != "" && config.BearerToken == "" {
 		config.BearerToken = value
 	}
@@ -139,21 +127,19 @@ func loadConfigFromEnv(config *clients.ClientConfig) {
 	}
 }
 
-// configFileExists checks if a file exists (renamed to avoid conflict with tools.go)
-func configFileExists(path string) bool {
+func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
 
-// PrintConfig prints the current configuration (with sensitive data masked)
+// PrintConfig prints the current configuration (with sensitive data masked).
 func PrintConfig(config clients.ClientConfig) {
 	fmt.Println("📋 Current Configuration:")
 	fmt.Printf("  API Type:    %s\n", config.APIType)
 	fmt.Printf("  Base URL:    %s\n", config.BaseURL)
 	fmt.Printf("  Model:       %s\n", config.ModelName)
-	
+
 	if config.BearerToken != "" {
-		// Mask the token for security
 		masked := config.BearerToken
 		if len(masked) > 8 {
 			masked = masked[:4] + "..." + masked[len(masked)-4:]
@@ -164,36 +150,28 @@ func PrintConfig(config clients.ClientConfig) {
 	} else {
 		fmt.Printf("  Bearer Token: (not set)\n")
 	}
-	
+
 	fmt.Printf("  Debug:       %t\n", config.Debug)
 }
 
-// ValidateAndFixConfig validates and attempts to fix common configuration issues
+// ValidateAndFixConfig validates and attempts to fix common configuration issues.
 func ValidateAndFixConfig(config *clients.ClientConfig) error {
-	// Auto-detect API type if not set
 	if config.APIType == "" {
 		config.APIType = clients.DetectAPIType(config.BaseURL)
 		fmt.Printf("ℹ️  Auto-detected API type: %s\n", config.APIType)
 	}
-	
-	// Validate using the clients package
+
 	if err := clients.ValidateConfig(*config); err != nil {
 		return err
 	}
-	
-	// Additional validation and fixes
+
 	switch strings.ToLower(config.APIType) {
 	case "openai", "openai-compatible":
-		// Ensure URL doesn't end with slash
 		config.BaseURL = strings.TrimSuffix(config.BaseURL, "/")
-		
-		// Validate URL format
 		if !strings.HasPrefix(config.BaseURL, "http") {
 			return fmt.Errorf("base URL must start with http:// or https://")
 		}
-		
 	case "ollama":
-		// Set defaults for Ollama
 		if config.BaseURL == "" {
 			config.BaseURL = "http://localhost:11434"
 		}
@@ -201,11 +179,11 @@ func ValidateAndFixConfig(config *clients.ClientConfig) error {
 			config.ModelName = "qwen3:32b"
 		}
 	}
-	
+
 	return nil
 }
 
-// CreateExampleConfig creates an example configuration file
+// CreateExampleConfig creates an example configuration file.
 func CreateExampleConfig(path string) error {
 	exampleContent := `# Loki Code Configuration File
 # Choose your API type: ollama, openai, or openai-compatible
@@ -230,6 +208,6 @@ MODEL_NAME=qwen3:32b
 # Debug mode (optional)
 # DEBUG=false
 `
-	
+
 	return os.WriteFile(path, []byte(exampleContent), 0600)
 }

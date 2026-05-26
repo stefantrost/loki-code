@@ -1,4 +1,4 @@
-package main
+package tools
 
 // toolEntry binds a tool name to its executor and its plan-mode policy.
 // Adding a new tool here lets ExecuteToolWithPlanMode dispatch to it without
@@ -22,4 +22,14 @@ var toolRegistry = map[string]toolEntry{
 	"tree_view":    {exec: executeTreeView, planAllowed: true},
 	"analyze_code": {exec: executeAnalyzeCode, planAllowed: true},
 	"http_request": {exec: executeCurl, planAllowed: true},
+}
+
+// ToolNames returns the names of all registered tools. Used by architecture
+// tests to verify schema/registry consistency without exposing the registry map.
+func ToolNames() []string {
+	names := make([]string, 0, len(toolRegistry))
+	for name := range toolRegistry {
+		names = append(names, name)
+	}
+	return names
 }

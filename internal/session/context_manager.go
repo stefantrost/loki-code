@@ -1,4 +1,4 @@
-package main
+package session
 
 import (
 	"encoding/json"
@@ -9,48 +9,31 @@ import (
 	"sync"
 )
 
-// Context-management tuning constants. Token estimation is a heuristic
-// (chars/4 with a per-message and per-tool overhead nudge); these multipliers
-// were picked empirically against qwen3:32b and gpt-4-class tokenizers and
-// will drift on tool-call-heavy turns. Treat them as approximate.
 const (
-	// toolMessageTokenInflation accounts for the wrapping JSON/tool-result
-	// metadata that providers add around the raw content we count.
-	toolMessageTokenInflation = 1.2
-	// perMessageOverheadChars approximates per-message JSON envelope size
-	// (role, separators, etc.) before dividing by charsPerToken.
-	perMessageOverheadChars = 50
-	// charsPerToken is the rough character-to-token ratio for English+code.
-	// Used only as a cold-start fallback before the first real API token count.
-	charsPerToken = 4
-	// tokenSafetyFactor inflates the cold-start estimate to leave headroom for
-	// tokenizer differences across models.
-	tokenSafetyFactor = 1.15
-	// compactionThresholdRatio is the fraction of maxTokens at which
-	// auto-compact triggers (and /compact is permitted manually).
-	compactionThresholdRatio = 0.75
-	// compactionRecentRatio controls how much of maxTokens to keep verbatim
-	// at the tail of a compaction (the rest gets summarized).
-	compactionRecentRatio = 0.25
-	// compactionMinMessages is the minimum message count before compaction runs.
-	compactionMinMessages = 6
+	toolMessageTokenInflation  = 1.2
+	perMessageOverheadChars    = 50
+	charsPerToken              = 4
+	tokenSafetyFactor          = 1.15
+	compactionThresholdRatio   = 0.75
+	compactionRecentRatio      = 0.25
+	compactionMinMessages      = 6
 )
 
 // ContextManager handles conversation context with token management.
 // All public methods are safe for concurrent use; internal helpers ending in
 // "Locked" assume the caller already holds mu.
 type ContextManager struct {
-	mu               sync.RWMutex
-	messages         []clients.ChatMessage
-	maxTokens        int
-	systemPrompt     clients.ChatMessage
-	planModePrompt   clients.ChatMessage
-	planMode         bool
-	conciseMode      bool
-	tasks            taskTracker
+	mu              sync.RWMutex
+	messages        []clients.ChatMessage
+	maxTokens       int
+	systemPrompt    clients.ChatMessage
+	planModePrompt  clients.ChatMessage
+	planMode        bool
+	conciseMode     bool
+	tasks           taskTracker
 	// lastKnownTokens holds the real prompt-token count from the most recent
 	// API response. -1 means no real count has arrived yet (cold-start).
-	lastKnownTokens  int
+	lastKnownTokens int
 }
 
 func NewContextManager(maxTokens int, toolProvider clients.ToolSchemaProvider) *ContextManager {
@@ -182,7 +165,6 @@ func (cm *ContextManager) AddMessage(message clients.ChatMessage) {
 	cm.messages = append(cm.messages, message)
 	slog.Debug("Message appended to context", "messages_after", len(cm.messages))
 
-	// Check for task completion in assistant messages
 	if message.Role == "assistant" {
 		cm.checkTaskCompletionLocked(message)
 	}
@@ -228,7 +210,6 @@ func (cm *ContextManager) GetSystemPrompt() clients.ChatMessage {
 	defer cm.mu.RUnlock()
 	return cm.systemPrompt
 }
-
 
 func (cm *ContextManager) estimateTokens(messages []clients.ChatMessage) int {
 	totalChars := 0
@@ -549,7 +530,6 @@ func (cm *ContextManager) extractCompletionSummary(content string) string {
 	return "Task completed"
 }
 
-// generateToolSchema creates a formatted JSON string representation of available tools
 func generateToolSchema(toolProvider clients.ToolSchemaProvider) string {
 	tools := toolProvider()
 
