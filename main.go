@@ -1,38 +1,57 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
-	"os/signal"
+	"path/filepath"
 	"strings"
-	"syscall"
 
 	"loki-code/clients"
+	"loki-code/internal/agent"
 	"loki-code/internal/config"
 	"loki-code/internal/session"
 	"loki-code/internal/tools"
-	"loki-code/internal/ui"
+	"loki-code/internal/view"
 )
 
-func setupLogger(debug bool) {
-	level := slog.LevelInfo
-	if debug {
-		level = slog.LevelDebug
+// setupLogger opens logs/loki-code.log (creating the directory if needed) and
+// configures slog to write there.  The log file is at DEBUG level regardless of
+// the debug flag so every run is fully auditable; the debug flag additionally
+// tees output to stderr for CLI users who want live visibility.
+// Returns the open log file so the caller can close it on exit (nil on error).
+func setupLogger(debug bool) *os.File {
+	if err := os.MkdirAll("logs", 0750); err != nil {
+		// Can't create logs dir — fall back to stderr only.
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})))
+		return nil
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: level,
-	})))
-}
 
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
+	lf, err := os.OpenFile(filepath.Join("logs", "loki-code.log"),
+		os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})))
+		return nil
 	}
-	return s[:maxLen] + "..."
+
+	// Always capture DEBUG in the file; optionally tee to stderr in debug mode.
+	// The tee is suppressed later for TUI mode (alt-screen would show raw log
+	// lines) — see the view-selection block in main().
+	var w io.Writer = lf
+	if debug {
+		w = io.MultiWriter(lf, os.Stderr)
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
+	return lf
 }
 
 func main() {
@@ -50,10 +69,11 @@ func main() {
 
 	flag.Parse()
 
-	setupLogger(*debugFlag)
+	logFile := setupLogger(*debugFlag)
+	if logFile != nil {
+		defer logFile.Close()
+	}
 	slog.Debug("Application started", "debug_enabled", *debugFlag)
-
-	fmt.Println("Loki Code - AI Coding Agent")
 
 	if *createConfig {
 		configPath := "llm.env"
@@ -100,12 +120,41 @@ func main() {
 		cfg.Debug = true
 	}
 
-	config.PrintConfig(cfg)
-
 	if err := config.ValidateAndFixConfig(&cfg); err != nil {
 		slog.Error("Configuration error", "error", err)
 		os.Exit(1)
 	}
+
+	// Select view early — before any stdout prints — so that TUI mode enters
+	// alt-screen before writing anything to the terminal.  Startup messages
+	// printed to the primary buffer before alt-screen would bleed back into
+	// the user's shell after the TUI session ends, and in some terminal
+	// emulators can cause a phantom second input row.
+	var v view.View
+	tuiView, tuiErr := view.NewTUIView()
+	if tuiErr != nil {
+		slog.Warn("TUI unavailable, falling back to CLI", "reason", tuiErr)
+		v = view.NewCLIView()
+	} else {
+		v = tuiView
+		// TUI mode: drop the stderr tee (if --debug added one) so raw log lines
+		// don't bleed into the alt-screen renderer.  All output still goes to
+		// logs/loki-code.log — use `tail -f logs/loki-code.log` to watch live.
+		if *debugFlag && logFile != nil {
+			slog.SetDefault(slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{
+				Level: slog.LevelDebug,
+			})))
+		}
+	}
+	_, isCLI := v.(*view.CLIView)
+
+	// Wire the view's confirm/diff methods into the tools package so that
+	// mutating tools (create_file, update_file, delete_file) use the right
+	// mechanism for the active UI.  In TUI mode this suspends alt-screen
+	// around each prompt; in CLI mode v.Confirm and v.ShowDiffAndConfirm
+	// delegate to the same ui.* helpers the tools package used by default,
+	// so behaviour is unchanged for CLI users.
+	tools.SetConfirmHooks(v.Confirm, v.ShowDiffAndConfirm)
 
 	if *listModels {
 		fmt.Println("Available models:")
@@ -126,7 +175,11 @@ func main() {
 		os.Exit(0)
 	}
 
-	fmt.Printf("Connecting to %s API (%s)...\n", cfg.APIType, cfg.ModelName)
+	// In CLI mode print startup diagnostics; TUI mode keeps the terminal clean.
+	if isCLI {
+		fmt.Println("Loki Code - AI Coding Agent")
+		fmt.Printf("Connecting to %s API (%s)...\n", cfg.APIType, cfg.ModelName)
+	}
 
 	// Create context manager with tool provider callback
 	ctxMgr := session.NewContextManager(4000, tools.GetAvailableTools)
@@ -142,219 +195,22 @@ func main() {
 	// Detect and set context window
 	if contextWindow, err := client.DetectContextWindow(); err == nil {
 		ctxMgr.SetMaxTokens(contextWindow)
-		fmt.Printf("✓ Detected context window: %d tokens (auto-compact at 75%%)\n", contextWindow)
+		if isCLI {
+			fmt.Printf("✓ Detected context window: %d tokens (auto-compact at 75%%)\n", contextWindow)
+		}
 	} else {
-		fmt.Printf("⚠️ Could not detect context window: %v\n", err)
-		fmt.Printf("✓ Using default context limit: 4,000 tokens\n")
+		if isCLI {
+			fmt.Printf("⚠️ Could not detect context window: %v\n", err)
+			fmt.Printf("✓ Using default context limit: 4,000 tokens\n")
+		}
 	}
 
 	if *conciseFlag || *conciseShort {
 		client.EnableConciseMode()
 	}
 
-	fmt.Println("Type 'exit', 'quit' to stop, '/plan' to enter plan mode, '/execute' to exit plan mode")
-	fmt.Println("Commands: /stats, /clear, /compact, /concise, /verbose, /mode")
-	fmt.Println("Tasks: /task [description], /task (show current), /complete")
-	fmt.Println("Press Ctrl+C during response to interrupt (or at prompt to exit)")
-	fmt.Println("----------------------------------------")
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		if client.IsResponseActive() {
-			fmt.Println("\n^C [Response interrupted]")
-			client.Interrupt()
-		} else {
-			fmt.Println("\nGoodbye!")
-			os.Exit(0)
-		}
-	}()
-
-	scanner := bufio.NewScanner(ui.UIInput)
-
-	for {
-		prompt := "\n> "
-		if client.IsInPlanMode() {
-			prompt = "\n[PLAN] > "
-		}
-		if client.IsInConciseMode() {
-			prompt = strings.Replace(prompt, "> ", "[CONCISE] > ", 1)
-		}
-		fmt.Print(prompt)
-
-		if !scanner.Scan() {
-			break
-		}
-
-		input := strings.TrimSpace(scanner.Text())
-
-		if input == "" {
-			continue
-		}
-
-		slog.Debug("User input received", "input_length", len(input), "input_preview", truncateString(input, 200))
-
-		if input == "exit" || input == "quit" {
-			slog.Debug("User requested exit")
-			fmt.Println("Goodbye!")
-			break
-		}
-
-		if input == "/clear" {
-			slog.Debug("Clearing context")
-			client.ClearContext()
-			fmt.Println("Context cleared!")
-			continue
-		}
-
-		if input == "/stats" {
-			tokens, messages, maxTokens := client.GetStats()
-			mode := "Execute"
-			if client.IsInPlanMode() {
-				mode = "Plan"
-			}
-			responseMode := "Verbose"
-			if client.IsInConciseMode() {
-				responseMode = "Concise"
-			}
-
-			activeTask := client.GetActiveTask()
-			taskInfo := "None"
-			if activeTask != "" {
-				taskInfo = "Active"
-			}
-
-			slog.Debug("Stats requested", "tokens", tokens, "max_tokens", maxTokens, "messages", messages,
-				"mode", mode, "response_mode", responseMode, "task", taskInfo)
-			fmt.Printf("Context Stats: %d/%d tokens, %d messages | Mode: %s | Response: %s | Task: %s\n",
-				tokens, maxTokens, messages, mode, responseMode, taskInfo)
-			continue
-		}
-
-		if input == "/concise" {
-			if client.IsInConciseMode() {
-				fmt.Println("Already in concise mode!")
-				continue
-			}
-			slog.Debug("Enabling concise mode")
-			client.EnableConciseMode()
-			fmt.Println("📝 Switched to concise mode - responses will be brief and to-the-point")
-			continue
-		}
-
-		if input == "/verbose" {
-			if !client.IsInConciseMode() {
-				fmt.Println("Already in verbose mode!")
-				continue
-			}
-			slog.Debug("Disabling concise mode")
-			client.DisableConciseMode()
-			fmt.Println("📝 Switched to verbose mode - responses will include detailed explanations")
-			continue
-		}
-
-		if input == "/mode" {
-			mode := "verbose"
-			if client.IsInConciseMode() {
-				mode = "concise"
-			}
-			planMode := ""
-			if client.IsInPlanMode() {
-				planMode = " (plan mode active)"
-			}
-			slog.Debug("Mode requested", "mode", mode, "plan_mode", client.IsInPlanMode())
-			fmt.Printf("Current response mode: %s%s\n", mode, planMode)
-			continue
-		}
-
-		if input == "/task" {
-			activeTask := client.GetActiveTask()
-			slog.Debug("Task requested", "has_active_task", activeTask != "")
-			if activeTask != "" {
-				fmt.Printf("🎯 Current task: %s\n", activeTask)
-			} else {
-				fmt.Println("No active task")
-			}
-			continue
-		}
-
-		if input == "/complete" {
-			activeTask := client.GetActiveTask()
-			slog.Debug("Complete task requested", "has_active_task", activeTask != "")
-			if activeTask != "" {
-				client.CompleteCurrentTask()
-				fmt.Println("✅ Task marked as complete")
-			} else {
-				fmt.Println("No active task to complete")
-			}
-			continue
-		}
-
-		if strings.HasPrefix(input, "/task ") {
-			newTask := strings.TrimPrefix(input, "/task ")
-			if strings.TrimSpace(newTask) != "" {
-				slog.Debug("Setting new task", "task", newTask)
-				client.SetActiveTask(newTask)
-			} else {
-				fmt.Println("Please specify a task: /task <description>")
-			}
-			continue
-		}
-
-		if input == "/compact" {
-			if !client.CanCompact() {
-				fmt.Println("Context not ready for compacting (need 60%+ token usage)")
-				continue
-			}
-			slog.Debug("Compacting context requested")
-			fmt.Println("Compacting conversation context...")
-			if err := client.CompactContext(); err != nil {
-				slog.Error("Compacting failed", "error", err)
-			}
-			continue
-		}
-
-		if input == "/plan" {
-			if client.IsInPlanMode() {
-				fmt.Println("Already in plan mode!")
-				continue
-			}
-			slog.Debug("Enabling plan mode")
-			client.EnablePlanMode()
-			fmt.Println("🎯 Plan Mode Activated!")
-			fmt.Println("You can now create execution plans. Only read operations are allowed.")
-			fmt.Println("Use '/execute' to exit plan mode and enable all tools.")
-			continue
-		}
-
-		if input == "/execute" {
-			if !client.IsInPlanMode() {
-				fmt.Println("Not in plan mode!")
-				continue
-			}
-			slog.Debug("Disabling plan mode")
-			client.DisablePlanMode()
-			fmt.Println("⚡ Execute Mode Activated!")
-			fmt.Println("All tools are now available for execution.")
-			continue
-		}
-
-		slog.Debug("Processing user message", "input_length", len(input))
-		fmt.Print("Assistant: ")
-		if err := client.StreamChat(input); err != nil {
-			slog.Error("StreamChat error", "error", err)
-		}
-
-		if client.CanCompact() {
-			fmt.Println("⚡ Context at 75% — auto-compacting...")
-			if err := client.CompactContext(); err != nil {
-				slog.Warn("Auto-compact failed", "error", err)
-			}
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		slog.Error("Error reading input", "error", err)
+	if err := agent.Run(client, v); err != nil {
+		slog.Error("Agent error", "error", err)
+		os.Exit(1)
 	}
 }

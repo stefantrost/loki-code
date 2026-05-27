@@ -70,14 +70,52 @@ func executeReadFile(args map[string]interface{}) (string, error) {
 	}
 
 	slog.Debug("Reading file", "path", path)
-	content, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		slog.Error("Failed to read file", "path", path, "error", err)
 		return "", fmt.Errorf("failed to read file: %v", err)
 	}
 
-	slog.Debug("File read successfully", "path", path, "content_length", len(content))
-	return string(content), nil
+	runes := []rune(string(raw))
+	total := len(runes)
+	slog.Debug("File read successfully", "path", path, "total_chars", total)
+
+	// Apply optional offset.
+	offset := 0
+	if v, ok := intArg(args, "offset"); ok && v > 0 {
+		offset = v
+	}
+	if total > 0 && offset >= total {
+		return fmt.Sprintf("[file has %d chars; offset %d is past end]", total, offset), nil
+	}
+	slice := runes[offset:]
+
+	// Apply optional length.
+	hasLength := false
+	if v, ok := intArg(args, "length"); ok && v > 0 && v < len(slice) {
+		slice = slice[:v]
+		hasLength = true
+	}
+
+	text := string(slice)
+	end := offset + len(slice)
+	if offset > 0 || hasLength {
+		return fmt.Sprintf("[chars %d–%d of %d]\n%s", offset, end, total, text), nil
+	}
+	return text, nil
+}
+
+// intArg coerces a JSON-decoded numeric value (float64 or int variants) to int.
+func intArg(args map[string]interface{}, key string) (int, bool) {
+	switch n := args[key].(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	}
+	return 0, false
 }
 
 func executeUpdateFile(args map[string]interface{}) (string, error) {

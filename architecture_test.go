@@ -224,15 +224,29 @@ func TestArchitecture_NoThirdPartyDeps(t *testing.T) {
 			inBlock = false
 			continue
 		case strings.HasPrefix(line, "require "):
-			if !strings.Contains(line, "// allow:") {
+			if !goModHasAllowMarker(line) {
 				t.Errorf("go.mod: third-party require without `// allow: <reason>` marker: %s", line)
 			}
 		case inBlock:
-			if !strings.Contains(raw, "// allow:") {
+			if !goModHasAllowMarker(raw) {
 				t.Errorf("go.mod: third-party require without `// allow: <reason>` marker: %s", line)
 			}
 		}
 	}
+}
+
+// goModHasAllowMarker returns true when a go.mod require line carries an
+// explicit "allow:" annotation in its comment.  It accepts both the form used
+// for direct deps ("// allow: reason") and the form go mod tidy produces for
+// indirect deps ("// indirect; allow: reason").  Checking the comment
+// section only (after the first "//") avoids false positives from module
+// paths or version strings that happen to contain the word "allow".
+func goModHasAllowMarker(line string) bool {
+	idx := strings.Index(line, "//")
+	if idx < 0 {
+		return false
+	}
+	return strings.Contains(line[idx:], "allow:")
 }
 
 // TestArchitecture_StructCohesion looks at every method on the public client

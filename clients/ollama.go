@@ -72,10 +72,11 @@ func (c *OllamaClient) StreamChat(userInput string) error {
 
 // StreamChatWithHistory implements LLMClient interface
 func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
+	c.notifyStreamStart()
 	currentTokens, messageCount, maxTokens := c.contextManager.GetStats()
 	slog.Debug("Starting API request", "model", c.modelName, "message_count", len(messages),
 		"current_tokens", currentTokens, "max_tokens", maxTokens)
-	fmt.Printf("[Context: %d/%d tokens, %d messages]\n", currentTokens, maxTokens, messageCount-1)
+	_ = messageCount // consumed by agent layer via GetStats
 
 	slog.Debug("Building request with all messages", "message_count", len(messages))
 	for i, msg := range messages {
@@ -157,7 +158,7 @@ func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 		select {
 		case <-c.interruptChan:
 			slog.Debug("Interrupt received during streaming")
-			fmt.Println("\n[Interrupted]")
+			fmt.Fprintln(c.getOutputWriter(), "\n[Interrupted]")
 			return nil
 		default:
 		}
@@ -179,7 +180,7 @@ func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 
 		if chatResponse.Message.Content != "" {
 			slog.Debug("Streaming content chunk", "content", chatResponse.Message.Content)
-			fmt.Print(chatResponse.Message.Content)
+			fmt.Fprint(c.getOutputWriter(), chatResponse.Message.Content)
 			currentMessage.Content += chatResponse.Message.Content
 			c.debugLog("Streaming chunk received: %q", chatResponse.Message.Content)
 		}
@@ -200,7 +201,7 @@ func (c *OllamaClient) StreamChatWithHistory(messages []ChatMessage) error {
 			if chatResponse.PromptEvalCount > 0 {
 				c.contextManager.UpdateTokenCount(chatResponse.PromptEvalCount)
 			}
-			fmt.Println()
+			fmt.Fprintln(c.getOutputWriter())
 			currentMessage.Role = "assistant"
 			c.debugLog("Streaming complete. Final message content: %q", currentMessage.Content)
 			break

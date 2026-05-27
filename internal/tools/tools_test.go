@@ -164,6 +164,81 @@ func TestExecuteReadFileNotFound(t *testing.T) {
 	}
 }
 
+// ── read_file offset / length tests ──────────────────────────────────────────
+
+func TestExecuteReadFile_Offset(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+	os.WriteFile(filepath.Join(tmpDir, "f.txt"), []byte("hello world"), 0644)
+
+	result, err := executeReadFile(map[string]interface{}{"path": "f.txt", "offset": 6})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(result, "hello") {
+		t.Errorf("result should not contain 'hello' when offset=6: %q", result)
+	}
+	if !strings.Contains(result, "world") {
+		t.Errorf("result should contain 'world': %q", result)
+	}
+}
+
+func TestExecuteReadFile_Length(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+	os.WriteFile(filepath.Join(tmpDir, "f.txt"), []byte("hello world"), 0644)
+
+	result, err := executeReadFile(map[string]interface{}{"path": "f.txt", "length": 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "hello") {
+		t.Errorf("result should contain 'hello': %q", result)
+	}
+	if strings.Contains(result, "world") {
+		t.Errorf("result should not contain 'world' when length=5: %q", result)
+	}
+}
+
+func TestExecuteReadFile_OffsetAndLength(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+	os.WriteFile(filepath.Join(tmpDir, "f.txt"), []byte("hello world"), 0644)
+
+	result, err := executeReadFile(map[string]interface{}{"path": "f.txt", "offset": 6, "length": 3})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "wor") {
+		t.Errorf("result should contain 'wor': %q", result)
+	}
+	if strings.Contains(result, "hello") || strings.Contains(result, "ld") {
+		t.Errorf("result should only contain 'wor', got: %q", result)
+	}
+}
+
+func TestExecuteReadFile_OffsetPastEnd(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldWd)
+	os.WriteFile(filepath.Join(tmpDir, "f.txt"), []byte("hi"), 0644)
+
+	result, err := executeReadFile(map[string]interface{}{"path": "f.txt", "offset": 100})
+	if err != nil {
+		t.Fatalf("unexpected error (should return message, not error): %v", err)
+	}
+	if !strings.Contains(result, "past end") {
+		t.Errorf("result should contain 'past end': %q", result)
+	}
+}
+
 func TestExecuteListFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldWd, _ := os.Getwd()

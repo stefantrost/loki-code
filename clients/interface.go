@@ -1,6 +1,9 @@
 package clients
 
-import "time"
+import (
+	"io"
+	"time"
+)
 
 // ChatMessage represents a message in the conversation
 type ChatMessage struct {
@@ -124,6 +127,19 @@ type LLMClient interface {
 	WindowDetector
 	SetDebug(enabled bool)
 	SetTruncator(TruncationPolicy)
+	// SetOutputWriter redirects streamed content tokens. Pass nil to restore
+	// the default (io.Discard). The view layer sets this before each StreamChat
+	// to route tokens into the TUI viewport or CLI stdout.
+	SetOutputWriter(w io.Writer)
+	// SetSystemWriter redirects tool-status output (tool blocks, separators)
+	// so it flows through WriteSystem rather than mixing with content tokens.
+	// Pass nil to restore the default (io.Discard).
+	SetSystemWriter(w io.Writer)
+	// SetStreamStartCallback registers fn to be called at the top of each
+	// StreamChatWithHistory invocation. The agent uses this to re-anchor the
+	// TUI pre-stream position after tool-status blocks are written between
+	// streaming segments. Pass nil to clear.
+	SetStreamStartCallback(fn func())
 }
 
 // ClientConfig holds configuration for creating clients

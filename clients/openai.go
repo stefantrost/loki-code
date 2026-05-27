@@ -169,10 +169,11 @@ func (c *OpenAIClient) StreamChat(userInput string) error {
 
 // StreamChatWithHistory implements LLMClient interface
 func (c *OpenAIClient) StreamChatWithHistory(messages []ChatMessage) error {
+	c.notifyStreamStart()
 	currentTokens, messageCount, maxTokens := c.contextManager.GetStats()
 	slog.Debug("Starting API request", "model", c.modelName, "message_count", len(messages),
 		"current_tokens", currentTokens, "max_tokens", maxTokens)
-	fmt.Printf("[Context: %d/%d tokens, %d messages]\n", currentTokens, maxTokens, messageCount-1)
+	_ = messageCount // consumed by agent layer via GetStats
 
 	tools := c.toolSchemaProvider()
 	slog.Debug("Retrieved tool schemas", "tool_count", len(tools))
@@ -229,7 +230,7 @@ func (c *OpenAIClient) StreamChatWithHistory(messages []ChatMessage) error {
 		totalChunks++
 		select {
 		case <-c.interruptChan:
-			fmt.Println("\n[Interrupted]")
+			fmt.Fprintln(c.getOutputWriter(), "\n[Interrupted]")
 			return nil
 		default:
 		}
@@ -259,7 +260,7 @@ func (c *OpenAIClient) StreamChatWithHistory(messages []ChatMessage) error {
 		for _, choice := range chunk.Choices {
 			// reasoning_content is internal model thought — skip it, don't display or store.
 			if choice.Delta.Content != "" {
-				fmt.Print(choice.Delta.Content)
+				fmt.Fprint(c.getOutputWriter(), choice.Delta.Content)
 				currentMessage.Content += choice.Delta.Content
 			}
 
@@ -282,7 +283,7 @@ func (c *OpenAIClient) StreamChatWithHistory(messages []ChatMessage) error {
 			}
 
 			if choice.FinishReason == "stop" || choice.FinishReason == "tool_calls" {
-				fmt.Println()
+				fmt.Fprintln(c.getOutputWriter())
 				currentMessage.Role = "assistant"
 				currentMessage.ToolCalls = buildToolCalls(toolChunks)
 				slog.Debug("Stream complete", "finish_reason", choice.FinishReason,
@@ -299,7 +300,7 @@ func (c *OpenAIClient) StreamChatWithHistory(messages []ChatMessage) error {
 	}
 
 	// [DONE] path — finish_reason may not have fired (some providers omit it).
-	fmt.Println()
+	fmt.Fprintln(c.getOutputWriter())
 	currentMessage.Role = "assistant"
 	currentMessage.ToolCalls = buildToolCalls(toolChunks)
 	c.contextManager.AddMessage(currentMessage)

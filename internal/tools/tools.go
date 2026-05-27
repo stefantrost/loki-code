@@ -11,10 +11,23 @@ import (
 
 // Confirmation hooks for mutating tools. Tests override these to bypass
 // interactive prompts; the defaults read from stdin via the ui helpers.
+// In TUI mode main.go calls SetConfirmHooks to replace them with the
+// view's suspend-aware versions so the terminal is handed back correctly.
 var (
 	confirmYN   = ui.PromptUser
 	confirmDiff = ui.ShowDiffAndConfirm
 )
+
+// SetConfirmHooks replaces the confirmation callbacks used by mutating tools.
+// Call this after view selection: in TUI mode pass v.Confirm and
+// v.ShowDiffAndConfirm so the alt-screen is suspended around each prompt.
+func SetConfirmHooks(
+	yn func(string) (bool, error),
+	diff func(string, string, string) (bool, error),
+) {
+	confirmYN = yn
+	confirmDiff = diff
+}
 
 func truncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
@@ -85,11 +98,19 @@ func GetAvailableTools() []clients.Tool {
 			Type: "function",
 			Function: clients.ToolFunc{
 				Name:        "read_file",
-				Description: "Read the contents of a file. For large files use offset and length to page through the content.",
+				Description: "Read file contents. Use offset and length to page through large files.",
 				Arguments: map[string]interface{}{
 					"path": map[string]interface{}{
 						"type":        "string",
 						"description": "File path to read",
+					},
+					"offset": map[string]interface{}{
+						"type":        "integer",
+						"description": "Character offset to start reading from (0-based). Default: 0.",
+					},
+					"length": map[string]interface{}{
+						"type":        "integer",
+						"description": "Maximum number of characters to read. Default: read the whole file.",
 					},
 				},
 			},

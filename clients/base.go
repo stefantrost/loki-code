@@ -2,8 +2,10 @@ package clients
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -20,6 +22,9 @@ type baseClient struct {
 	interruptChan      chan struct{}
 	contextManager     ContextManager
 	httpClient         *http.Client
+	outputWriter       io.Writer // nil → io.Discard; content tokens
+	systemWriter       io.Writer // nil → io.Discard; tool-status blocks
+	onStreamStart      func()    // nil → no-op; called at top of StreamChatWithHistory
 }
 
 // streamer is the protocol-specific surface that handleToolCalls needs back
@@ -95,6 +100,49 @@ func (c *baseClient) SetTruncator(p TruncationPolicy) {
 	c.truncator = p
 }
 
+// SetOutputWriter redirects streamed content tokens to w. Pass nil to restore
+// the default (io.Discard). The agent sets this before each StreamChat.
+func (c *baseClient) SetOutputWriter(w io.Writer) { c.outputWriter = w }
+
+// getOutputWriter returns the active content writer, falling back to io.Discard.
+// The agent always sets a writer before calling StreamChat; Discard is only
+// reached in tests or edge cases.
+func (c *baseClient) getOutputWriter() io.Writer {
+	if c.outputWriter != nil {
+		return c.outputWriter
+	}
+	return io.Discard
+}
+
+// SetSystemWriter redirects tool-status output to w. Pass nil to restore the
+// default (io.Discard). The agent routes this to view.WriteSystem so tool
+// blocks never mix with the glamour-rendered response region.
+func (c *baseClient) SetSystemWriter(w io.Writer) { c.systemWriter = w }
+
+// getSystemWriter returns the active system writer, falling back to io.Discard.
+func (c *baseClient) getSystemWriter() io.Writer {
+	if c.systemWriter != nil {
+		return c.systemWriter
+	}
+	return io.Discard
+}
+
+// SetStreamStartCallback registers fn to be called at the top of each
+// StreamChatWithHistory invocation. Pass nil to clear it.
+func (c *baseClient) SetStreamStartCallback(fn func()) { c.onStreamStart = fn }
+
+// notifyStreamStart calls onStreamStart if one is registered. Called at the
+// top of each provider's StreamChatWithHistory, before any tokens are written.
+func (c *baseClient) notifyStreamStart() {
+	if c.onStreamStart != nil {
+		c.onStreamStart()
+	}
+}
+
+// toolBoxWidth is the fixed inner width of the tool-call box drawn in the chat
+// pane. Wide enough to fit long file paths on an 80-col terminal with sidebar.
+const toolBoxWidth = 64
+
 // handleToolCalls executes every tool call in the assistant message, appends
 // the results to context, and issues a follow-up streaming request via the
 // concrete client.
@@ -104,22 +152,52 @@ func (c *baseClient) handleToolCalls(self streamer, assistantMessage ChatMessage
 		"assistant_message_content", truncateString(assistantMessage.Content, 500),
 		"tool_calls_count", len(assistantMessage.ToolCalls), "plan_mode", planMode)
 
+	sw := c.getSystemWriter()
+
 	for i, toolCall := range assistantMessage.ToolCalls {
+		name := toolCall.Function.Name
 		slog.Debug("Processing tool call", "index", i, "tool_id", toolCall.ID,
-			"tool_name", toolCall.Function.Name, "tool_arguments", toolCall.Function.Arguments)
+			"tool_name", name, "tool_arguments", toolCall.Function.Arguments)
 
-		fmt.Printf("🔧 Executing tools...\n")
-		fmt.Printf("Calling %s...\n", toolCall.Function.Name)
+		// ── Top border ──────────────────────────────────────────────────
+		//   ┌─ 🔧 tool_name ──────────────────────────────────────────┐
+		label := fmt.Sprintf("─ 🔧 %s ", name)
+		labelRunes := 5 + len([]rune(name)) // "─ 🔧 <name> "
+		fill := toolBoxWidth - labelRunes - 1
+		if fill < 1 {
+			fill = 1
+		}
+		fmt.Fprintf(sw, "\n┌%s%s┐\n", label, strings.Repeat("─", fill))
 
+		// ── Argument lines ────────────────────────────────────────────
+		//   │ key: value                                               │
+		for k, v := range toolCall.Function.Arguments {
+			line := fmt.Sprintf("%s: %v", k, v)
+			runes := []rune(line)
+			if len(runes) > 400 {
+				runes = append(runes[:399], '…')
+				line = string(runes)
+			}
+			pad := toolBoxWidth - len([]rune(line))
+			if pad < 0 {
+				pad = 0
+			}
+			fmt.Fprintf(sw, "│ %s%s │\n", line, strings.Repeat(" ", pad))
+		}
+
+		// ── Bottom border ─────────────────────────────────────────────
+		fmt.Fprintf(sw, "└%s┘\n", strings.Repeat("─", toolBoxWidth+2))
+
+		// ── Execute ───────────────────────────────────────────────────
 		result, err := c.toolExecutor(toolCall, planMode)
 		if err != nil {
-			slog.Error("Tool execution returned error", "tool_name", toolCall.Function.Name, "error", err)
+			slog.Error("Tool execution returned error", "tool_name", name, "error", err)
 			result = fmt.Sprintf("Error: %v", err)
 		}
-		result = c.truncateToolResult(result, toolCall.Function.Name)
-		c.debugLog("Tool %s result length: %d characters", toolCall.Function.Name, len(result))
+		result = c.truncateToolResult(result, name)
+		c.debugLog("Tool %s result length: %d characters", name, len(result))
 
-		fmt.Printf("✓ %s completed\n", toolCall.Function.Name)
+		fmt.Fprintf(sw, "✓ %s  (%d chars)\n", name, len(result))
 
 		c.contextManager.AddMessage(ChatMessage{
 			Role:       "tool",
