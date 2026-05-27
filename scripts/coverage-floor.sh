@@ -77,4 +77,22 @@ if (( fail )); then
   exit 1
 fi
 
+stale=0
+declare -a stale_entries
+while read -r file _; do
+  [[ -z "$file" || "$file" == \#* ]] && continue
+  if ! grep -qF "$file" <(echo "$current"); then
+    stale_entries+=("$file")
+    stale=1
+  fi
+done < "$FLOORS"
+
+if (( stale )); then
+  echo "Stale entries in $FLOORS (files not in cover.out — run 'make cover-update'):" >&2
+  for e in "${stale_entries[@]}"; do
+    echo "  $e" >&2
+  done
+  exit 1
+fi
+
 echo "Coverage floors OK."

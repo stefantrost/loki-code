@@ -12,6 +12,10 @@ import (
 	"syscall"
 
 	"loki-code/clients"
+	"loki-code/internal/config"
+	"loki-code/internal/session"
+	"loki-code/internal/tools"
+	"loki-code/internal/ui"
 )
 
 func setupLogger(debug bool) {
@@ -57,7 +61,7 @@ func main() {
 			configPath = *configFile
 		}
 
-		if err := CreateExampleConfig(configPath); err != nil {
+		if err := config.CreateExampleConfig(configPath); err != nil {
 			slog.Error("Error creating config file", "error", err)
 			os.Exit(1)
 		}
@@ -67,7 +71,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	config, err := LoadConfig(*configFile)
+	cfg, err := config.LoadConfig(*configFile)
 	if err != nil {
 		slog.Error("Error loading configuration", "error", err)
 		fmt.Println("Run 'loki-code --create-config' to create an example configuration file.")
@@ -75,37 +79,37 @@ func main() {
 	}
 
 	if *modelFlag != "" {
-		config.ModelName = *modelFlag
+		cfg.ModelName = *modelFlag
 	} else if *modelShort != "" {
-		config.ModelName = *modelShort
+		cfg.ModelName = *modelShort
 	}
 
 	if *baseURL != "" {
-		config.BaseURL = *baseURL
+		cfg.BaseURL = *baseURL
 	}
 
 	if *apiType != "" {
-		config.APIType = *apiType
+		cfg.APIType = *apiType
 	}
 
 	if *bearerToken != "" {
-		config.BearerToken = *bearerToken
+		cfg.BearerToken = *bearerToken
 	}
 
 	if *debugFlag {
-		config.Debug = true
+		cfg.Debug = true
 	}
 
-	PrintConfig(config)
+	config.PrintConfig(cfg)
 
-	if err := ValidateAndFixConfig(&config); err != nil {
+	if err := config.ValidateAndFixConfig(&cfg); err != nil {
 		slog.Error("Configuration error", "error", err)
 		os.Exit(1)
 	}
 
 	if *listModels {
 		fmt.Println("Available models:")
-		if strings.ToLower(config.APIType) == "ollama" {
+		if strings.ToLower(cfg.APIType) == "ollama" {
 			cmd := exec.Command("ollama", "list")
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
@@ -116,24 +120,24 @@ func main() {
 				os.Exit(1)
 			}
 		} else {
-			fmt.Printf("Model listing not supported for API type: %s\n", config.APIType)
-			fmt.Printf("Current configured model: %s\n", config.ModelName)
+			fmt.Printf("Model listing not supported for API type: %s\n", cfg.APIType)
+			fmt.Printf("Current configured model: %s\n", cfg.ModelName)
 		}
 		os.Exit(0)
 	}
 
-	fmt.Printf("Connecting to %s API (%s)...\n", config.APIType, config.ModelName)
+	fmt.Printf("Connecting to %s API (%s)...\n", cfg.APIType, cfg.ModelName)
 
 	// Create context manager with tool provider callback
-	ctxMgr := NewContextManager(4000, GetAvailableTools)
+	ctxMgr := session.NewContextManager(4000, tools.GetAvailableTools)
 
 	// Create client with callbacks
-	client, err := clients.CreateClient(config, ctxMgr, ExecuteToolWithPlanMode, GetAvailableTools)
+	client, err := clients.CreateClient(cfg, ctxMgr, tools.ExecuteToolWithPlanMode, tools.GetAvailableTools)
 	if err != nil {
 		slog.Error("Error creating client", "error", err)
 		os.Exit(1)
 	}
-	client.SetTruncator(SmartTruncate)
+	client.SetTruncator(tools.SmartTruncate)
 
 	// Detect and set context window
 	if contextWindow, err := client.DetectContextWindow(); err == nil {
@@ -167,7 +171,7 @@ func main() {
 		}
 	}()
 
-	scanner := bufio.NewScanner(uiInput)
+	scanner := bufio.NewScanner(ui.UIInput)
 
 	for {
 		prompt := "\n> "
