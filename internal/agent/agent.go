@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -29,6 +30,17 @@ func (w *tokenWriter) Write(p []byte) (int, error) {
 	s := string(p)
 	w.v.WriteToken(s)
 	w.buf.WriteString(s)
+	return len(p), nil
+}
+
+// thinkingWriter implements io.Writer. Each Write call forwards reasoning
+// tokens to the view so they can be displayed separately from response tokens.
+type thinkingWriter struct {
+	v view.View
+}
+
+func (w *thinkingWriter) Write(p []byte) (int, error) {
+	w.v.WriteThinking(string(p))
 	return len(p), nil
 }
 
@@ -70,13 +82,15 @@ func (w *systemWriter) flush() {
 // ── Public entry point ────────────────────────────────────────────────────────
 
 // Run starts the agent REPL inside v.  v.Run blocks until the session ends.
-func Run(client clients.LLMClient, v view.View) error {
-	return v.Run(func() { runLoop(client, v) })
+// ctx allows external callers to cancel the session; the internal SIGINT
+// handler remains active for interactive interrupt-vs-quit behaviour.
+func Run(ctx context.Context, client clients.LLMClient, v view.View) error {
+	return v.Run(func() { runLoop(ctx, client, v) })
 }
 
 // ── REPL loop ─────────────────────────────────────────────────────────────────
 
-func runLoop(client clients.LLMClient, v view.View) {
+func runLoop(ctx context.Context, client clients.LLMClient, v view.View) {
 	// SIGINT / SIGTERM handling:
 	//   • during an active response → interrupt the stream and continue
 	//   • at the idle prompt → stop the view and exit cleanly
@@ -99,6 +113,12 @@ func runLoop(client clients.LLMClient, v view.View) {
 	updateStatus(client, v)
 
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		input, err := v.ReadInput("")
 		if err != nil {
 			// io.EOF or "session ended" (TUIView closed inputCh) — clean exit.
@@ -135,14 +155,16 @@ func runLoop(client clients.LLMClient, v view.View) {
 // streamResponse wires up the token/system writers, streams the LLM response,
 // commits the glamour-rendered result, and auto-compacts if needed.
 func streamResponse(client clients.LLMClient, v view.View, input string) {
-	tw := &tokenWriter{v: v}
-	sw := &systemWriter{v: v}
+	tw  := &tokenWriter{v: v}
+	thw := &thinkingWriter{v: v}
+	sw  := &systemWriter{v: v}
 
 	// Anchor the start of this stream segment in the TUI viewport so that
 	// CommitMessage only replaces the tokens written since this call.
 	v.BeginStream()
 
 	client.SetOutputWriter(tw)
+	client.SetThinkingWriter(thw)
 	client.SetSystemWriter(sw)
 	// Each StreamChatWithHistory call (follow-up after tool execution) fires
 	// this callback, re-anchoring the viewport past the tool-block lines and
@@ -170,6 +192,7 @@ func streamResponse(client clients.LLMClient, v view.View, input string) {
 
 	// Reset writers so stale references can't leak writes after this turn.
 	client.SetOutputWriter(nil)
+	client.SetThinkingWriter(nil)
 	client.SetSystemWriter(nil)
 	client.SetStreamStartCallback(nil)
 

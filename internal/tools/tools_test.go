@@ -568,7 +568,7 @@ func TestExecuteTreeView(t *testing.T) {
 	}
 }
 
-func TestExecuteToolWithPlanMode(t *testing.T) {
+func TestExecuteDispatch_PlanModeBlocked(t *testing.T) {
 	toolCall := clients.ToolCall{
 		Function: clients.ToolFunc{
 			Name: "create_file",
@@ -579,17 +579,17 @@ func TestExecuteToolWithPlanMode(t *testing.T) {
 		},
 	}
 
-	result, err := ExecuteToolWithPlanMode(toolCall, true)
+	result, err := executeDispatch(toolCall, true)
 	if err != nil {
-		t.Fatalf("ExecuteToolWithPlanMode error: %v", err)
+		t.Fatalf("executeDispatch error: %v", err)
 	}
 
 	if !strings.Contains(result, "Plan Mode") {
-		t.Errorf("ExecuteToolWithPlanMode result = %q, should contain 'Plan Mode'", result)
+		t.Errorf("executeDispatch result = %q, should contain 'Plan Mode'", result)
 	}
 }
 
-func TestExecuteToolWithPlanModeReadAllowed(t *testing.T) {
+func TestExecuteDispatch_ReadAllowedInPlanMode(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldWd, _ := os.Getwd()
 	os.Chdir(tmpDir)
@@ -607,13 +607,13 @@ func TestExecuteToolWithPlanModeReadAllowed(t *testing.T) {
 		},
 	}
 
-	result, err := ExecuteToolWithPlanMode(toolCall, true)
+	result, err := executeDispatch(toolCall, true)
 	if err != nil {
-		t.Fatalf("ExecuteToolWithPlanMode error: %v", err)
+		t.Fatalf("executeDispatch error: %v", err)
 	}
 
 	if result != "plan test" {
-		t.Errorf("ExecuteToolWithPlanMode result = %q, want %q", result, "plan test")
+		t.Errorf("executeDispatch result = %q, want %q", result, "plan test")
 	}
 }
 
@@ -624,9 +624,9 @@ func TestExecuteToolUnknown(t *testing.T) {
 		},
 	}
 
-	_, err := ExecuteToolWithPlanMode(toolCall, false)
+	_, err := executeDispatch(toolCall, false)
 	if err == nil {
-		t.Fatal("ExecuteToolWithPlanMode expected error for unknown tool")
+		t.Fatal("executeDispatch expected error for unknown tool")
 	}
 }
 

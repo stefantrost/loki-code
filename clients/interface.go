@@ -140,6 +140,11 @@ type LLMClient interface {
 	// TUI pre-stream position after tool-status blocks are written between
 	// streaming segments. Pass nil to clear.
 	SetStreamStartCallback(fn func())
+
+	// SetThinkingWriter redirects reasoning/thinking tokens emitted by the model
+	// before its main response (e.g. reasoning_content in OpenAI-compatible SSE).
+	// Pass nil to discard. The agent sets this before each StreamChat.
+	SetThinkingWriter(w io.Writer)
 }
 
 // ClientConfig holds configuration for creating clients
@@ -149,6 +154,7 @@ type ClientConfig struct {
 	ModelName   string
 	BearerToken string
 	Debug       bool
+	Truncator   TruncationPolicy // optional; applied at client construction
 }
 
 // ChatResponse represents a streaming response chunk from the Ollama API.

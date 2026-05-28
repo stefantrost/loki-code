@@ -60,4 +60,9 @@ func (v *CLIView) Run(fn func()) error {
 	return nil
 }
 
+// WriteThinking is a no-op for CLI; reasoning tokens are not displayed.
+func (v *CLIView) WriteThinking(_ string) {}
+
 func (v *CLIView) Stop() {}
+
+func (v *CLIView) IsCLI() bool { return true }

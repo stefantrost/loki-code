@@ -6,27 +6,41 @@ import (
 	"strings"
 
 	"loki-code/clients"
-	"loki-code/internal/ui"
 )
 
-// Confirmation hooks for mutating tools. Tests override these to bypass
-// interactive prompts; the defaults read from stdin via the ui helpers.
-// In TUI mode main.go calls SetConfirmHooks to replace them with the
-// view's suspend-aware versions so the terminal is handed back correctly.
+// Confirmation hooks for mutating tools. Production code sets these via
+// ToolRunner.Execute before dispatch; tests assign them directly in init().
 var (
-	confirmYN   = ui.PromptUser
-	confirmDiff = ui.ShowDiffAndConfirm
+	confirmYN   func(string) (bool, error)
+	confirmDiff func(string, string, string) (bool, error)
 )
 
-// SetConfirmHooks replaces the confirmation callbacks used by mutating tools.
-// Call this after view selection: in TUI mode pass v.Confirm and
-// v.ShowDiffAndConfirm so the alt-screen is suspended around each prompt.
-func SetConfirmHooks(
+// ToolRunner binds view-aware confirmation hooks to the tool executor.
+// Create one after view selection and pass runner.Execute to CreateClient.
+type ToolRunner struct {
+	confirmYN   func(string) (bool, error)
+	confirmDiff func(string, string, string) (bool, error)
+}
+
+// NewToolRunner returns a ToolRunner bound to the supplied confirmation hooks.
+// Both must be non-nil; callers wire view-aware implementations (e.g.
+// ui.PromptUser / ui.ShowDiffAndConfirm or view-suspending wrappers).
+func NewToolRunner(
 	yn func(string) (bool, error),
 	diff func(string, string, string) (bool, error),
-) {
-	confirmYN = yn
-	confirmDiff = diff
+) *ToolRunner {
+	if yn == nil || diff == nil {
+		panic("tools.NewToolRunner: confirmation hooks must be non-nil")
+	}
+	return &ToolRunner{confirmYN: yn, confirmDiff: diff}
+}
+
+// Execute sets the active confirmation hooks for this call and dispatches
+// the tool. Safe for a single-goroutine REPL; not safe for concurrent use.
+func (r *ToolRunner) Execute(toolCall clients.ToolCall, planMode bool) (string, error) {
+	confirmYN = r.confirmYN
+	confirmDiff = r.confirmDiff
+	return executeDispatch(toolCall, planMode)
 }
 
 func truncateString(s string, maxLen int) string {
@@ -47,9 +61,11 @@ func SmartTruncate(result, toolName string) string {
 	}
 	switch toolName {
 	case "read_file":
-		return result[:maxLength-150] + fmt.Sprintf(
-			"\n\n... (truncated at %d chars — call read_file again with offset=%d to continue)",
-			maxLength-150, maxLength-150)
+		shown := maxLength - 200
+		return result[:shown] + fmt.Sprintf(
+			"\n\n[FILE TRUNCATED — %d chars shown. "+
+				"You MUST call read_file again with offset=%d to read the next section before continuing.]",
+			shown, shown)
 	case "list_files", "find_files":
 		lines := strings.Split(result, "\n")
 		var kept []string
@@ -98,7 +114,7 @@ func GetAvailableTools() []clients.Tool {
 			Type: "function",
 			Function: clients.ToolFunc{
 				Name:        "read_file",
-				Description: "Read file contents. Use offset and length to page through large files.",
+				Description: "Read file contents. Reads the entire file by default; use offset and length only when paging through very large files.",
 				Arguments: map[string]interface{}{
 					"path": map[string]interface{}{
 						"type":        "string",
@@ -110,7 +126,7 @@ func GetAvailableTools() []clients.Tool {
 					},
 					"length": map[string]interface{}{
 						"type":        "integer",
-						"description": "Maximum number of characters to read. Default: read the whole file.",
+						"description": "Maximum number of characters to read. Omit to read the entire file.",
 					},
 				},
 			},
@@ -319,12 +335,12 @@ func createAnalyzerTool(projectInfo ProjectInfo) clients.Tool {
 	}
 }
 
-// ExecuteToolWithPlanMode executes a tool call with optional plan mode restriction.
+// executeDispatch executes a tool call with optional plan mode restriction.
 // Dispatch and plan-mode policy come from toolRegistry; adding a tool there is
 // the only edit needed.
-func ExecuteToolWithPlanMode(toolCall clients.ToolCall, planMode bool) (string, error) {
+func executeDispatch(toolCall clients.ToolCall, planMode bool) (string, error) {
 	name := toolCall.Function.Name
-	slog.Debug("ExecuteToolWithPlanMode called", "tool_name", name,
+	slog.Debug("executeDispatch called", "tool_name", name,
 		"tool_id", toolCall.ID, "plan_mode", planMode, "arguments", toolCall.Function.Arguments)
 
 	entry, ok := toolRegistry[name]

@@ -423,6 +423,276 @@ func TestTUIModel_MouseWheelScrollsViewport(t *testing.T) {
 	}
 }
 
+// ── thinking indicator ────────────────────────────────────────────────────────
+
+// TestTUIModel_ThinkingMsg_AccumulatesInThinkBuf verifies that thinkingMsg
+// tokens accumulate in thinkBuf and phase transitions to phaseThinking.
+func TestTUIModel_ThinkingMsg_AccumulatesInThinkBuf(t *testing.T) {
+	events := make(chan tuiMsg, 8)
+	m := newTestModel(t, events, make(chan<- string, 1))
+	m = initSize(t, m, 100, 40)
+
+	m = send(t, m, beginMsg{})
+	m = send(t, m, thinkingMsg("I should check the file "))
+	m = send(t, m, thinkingMsg("before responding."))
+
+	if got := m.thinkBuf.String(); got != "I should check the file before responding." {
+		t.Errorf("thinkBuf = %q, want full accumulated reasoning", got)
+	}
+	if m.streamPhase != phaseThinking {
+		t.Errorf("streamPhase = %v after thinkingMsg, want phaseThinking", m.streamPhase)
+	}
+	// thinkBuf content must be visible in renderContent while not yet done.
+	if m.thinkDone {
+		t.Error("thinkDone should be false while thinking tokens are still arriving")
+	}
+	content := m.renderContent()
+	if !strings.Contains(content, "💭 Thinking") {
+		t.Errorf("renderContent() = %q — thinking indicator not shown", content)
+	}
+}
+
+// TestTUIModel_ThinkingCollapses_OnFirstToken verifies that thinkDone is set
+// when the first regular token arrives after reasoning tokens.
+func TestTUIModel_ThinkingCollapses_OnFirstToken(t *testing.T) {
+	events := make(chan tuiMsg, 8)
+	m := newTestModel(t, events, make(chan<- string, 1))
+	m = initSize(t, m, 100, 40)
+
+	m = send(t, m, beginMsg{})
+	m = send(t, m, thinkingMsg("reasoning text"))
+	m = send(t, m, tokenMsg("response starts"))
+
+	if !m.thinkDone {
+		t.Error("thinkDone should be true after first regular token")
+	}
+	if m.thinkTokenCount == 0 {
+		t.Error("thinkTokenCount should be set when thinking collapses")
+	}
+	if m.streamPhase != phaseStreaming {
+		t.Errorf("streamPhase = %v after first token, want phaseStreaming", m.streamPhase)
+	}
+	// The live thinking block is replaced by the collapsed summary in renderContent.
+	content := m.renderContent()
+	if strings.Contains(content, "💭 Thinking…") {
+		t.Error("renderContent() still shows live thinking block after first token — should be collapsed")
+	}
+}
+
+// TestTUIModel_ThoughtSummary_SurvivesCommit verifies that after commitMsg,
+// the thought summary line is present in m.lines (not lost) so it persists
+// when the user scrolls up after the response is complete.
+func TestTUIModel_ThoughtSummary_SurvivesCommit(t *testing.T) {
+	events := make(chan tuiMsg, 8)
+	m := newTestModel(t, events, make(chan<- string, 1))
+	m = initSize(t, m, 100, 40)
+
+	m = send(t, m, beginMsg{})
+	m = send(t, m, thinkingMsg("I thought about this carefully."))
+	m = send(t, m, tokenMsg("Here is my answer."))
+	m = send(t, m, commitMsg{content: "Here is my answer."})
+
+	// After commit, thinkBuf must be cleared.
+	if m.thinkBuf.Len() != 0 {
+		t.Error("thinkBuf should be empty after commitMsg")
+	}
+	if m.streamPhase != phaseIdle {
+		t.Errorf("streamPhase = %v after commitMsg, want phaseIdle", m.streamPhase)
+	}
+
+	// The thought summary must be in m.lines so it survives in history.
+	combined := strings.Join(m.lines, "\n")
+	if !strings.Contains(combined, "💭 Thought") {
+		t.Errorf("m.lines does not contain thought summary after commit\nlines: %v", m.lines)
+	}
+}
+
+// TestTUIModel_ThoughtSummary_SurvivesBeginMsg verifies that a thought summary
+// is also committed to m.lines when a second beginMsg fires (tool-call path)
+// before commitMsg arrives.
+func TestTUIModel_ThoughtSummary_SurvivesBeginMsg(t *testing.T) {
+	events := make(chan tuiMsg, 8)
+	m := newTestModel(t, events, make(chan<- string, 1))
+	m = initSize(t, m, 100, 40)
+
+	m = send(t, m, beginMsg{})
+	m = send(t, m, thinkingMsg("I will use a tool."))
+	// Tool call fires — second BeginStream before any regular tokens.
+	m = send(t, m, beginMsg{})
+
+	combined := strings.Join(m.lines, "\n")
+	if !strings.Contains(combined, "💭 Thought") {
+		t.Errorf("m.lines does not contain thought summary after second beginMsg\nlines: %v", m.lines)
+	}
+	// After re-anchor, thinkBuf should be reset.
+	if m.thinkBuf.Len() != 0 {
+		t.Error("thinkBuf should be empty after second beginMsg")
+	}
+}
+
+// TestTUIModel_PhaseIdle_Initially checks that the model starts in phaseIdle.
+func TestTUIModel_PhaseIdle_Initially(t *testing.T) {
+	events := make(chan tuiMsg, 8)
+	m := newTestModel(t, events, make(chan<- string, 1))
+	if m.streamPhase != phaseIdle {
+		t.Errorf("initial streamPhase = %v, want phaseIdle", m.streamPhase)
+	}
+}
+
+// TestTUIModel_PhaseWaiting_AfterBeginMsg verifies phaseWaiting is set on beginMsg.
+func TestTUIModel_PhaseWaiting_AfterBeginMsg(t *testing.T) {
+	events := make(chan tuiMsg, 8)
+	m := newTestModel(t, events, make(chan<- string, 1))
+	m = initSize(t, m, 100, 40)
+	m = send(t, m, beginMsg{})
+	if m.streamPhase != phaseWaiting {
+		t.Errorf("streamPhase = %v after beginMsg, want phaseWaiting", m.streamPhase)
+	}
+}
+
+// ── confirmation modals ───────────────────────────────────────────────────────
+
+func TestTUIModel_ShowDiffMsg_SetsPendingDiff(t *testing.T) {
+	events := make(chan tuiMsg, 8)
+	m := newTestModel(t, events, make(chan<- string, 1))
+	m = initSize(t, m, 100, 40)
+
+	resp := make(chan bool, 1)
+	m = send(t, m, showDiffMsg{old: "old", new: "new", filename: "test.go", resp: resp})
+
+	if m.pendingDiff == nil {
+		t.Fatal("pendingDiff is nil after showDiffMsg")
+	}
+	if !strings.Contains(m.View(), "Apply this change?") {
+		t.Errorf("View() does not show diff modal after showDiffMsg")
+	}
+}
+
+func TestTUIModel_ShowConfirmMsg_SetsPendingConfirm(t *testing.T) {
+	events := make(chan tuiMsg, 8)
+	m := newTestModel(t, events, make(chan<- string, 1))
+	m = initSize(t, m, 100, 40)
+
+	resp := make(chan bool, 1)
+	m = send(t, m, showConfirmMsg{prompt: "Delete this file?", resp: resp})
+
+	if m.pendingConfirm == nil {
+		t.Fatal("pendingConfirm is nil after showConfirmMsg")
+	}
+	if !strings.Contains(m.View(), "Delete this file?") {
+		t.Errorf("View() does not show confirm modal after showConfirmMsg")
+	}
+}
+
+func TestTUIModel_PendingDiff_YAccepts(t *testing.T) {
+	events := make(chan tuiMsg, 8)
+	m := newTestModel(t, events, make(chan<- string, 1))
+	m = initSize(t, m, 100, 40)
+
+	resp := make(chan bool, 1)
+	m = send(t, m, showDiffMsg{old: "", new: "new content", filename: "f.go", resp: resp})
+	m = send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+
+	if m.pendingDiff != nil {
+		t.Error("pendingDiff should be nil after y key")
+	}
+	select {
+	case got := <-resp:
+		if !got {
+			t.Error("resp = false, want true for y key")
+		}
+	default:
+		t.Error("nothing sent to resp channel after y key")
+	}
+}
+
+func TestTUIModel_PendingDiff_NRejects(t *testing.T) {
+	events := make(chan tuiMsg, 8)
+	m := newTestModel(t, events, make(chan<- string, 1))
+	m = initSize(t, m, 100, 40)
+
+	resp := make(chan bool, 1)
+	m = send(t, m, showDiffMsg{old: "", new: "content", filename: "f.go", resp: resp})
+	m = send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+
+	if m.pendingDiff != nil {
+		t.Error("pendingDiff should be nil after n key")
+	}
+	select {
+	case got := <-resp:
+		if got {
+			t.Error("resp = true, want false for n key")
+		}
+	default:
+		t.Error("nothing sent to resp channel after n key")
+	}
+}
+
+func TestTUIModel_PendingConfirm_YAccepts(t *testing.T) {
+	events := make(chan tuiMsg, 8)
+	m := newTestModel(t, events, make(chan<- string, 1))
+	m = initSize(t, m, 100, 40)
+
+	resp := make(chan bool, 1)
+	m = send(t, m, showConfirmMsg{prompt: "Sure?", resp: resp})
+	m = send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+
+	if m.pendingConfirm != nil {
+		t.Error("pendingConfirm should be nil after y key")
+	}
+	select {
+	case got := <-resp:
+		if !got {
+			t.Error("resp = false, want true for y key")
+		}
+	default:
+		t.Error("nothing sent to resp channel after y key")
+	}
+}
+
+func TestTUIModel_PendingConfirm_NRejects(t *testing.T) {
+	events := make(chan tuiMsg, 8)
+	m := newTestModel(t, events, make(chan<- string, 1))
+	m = initSize(t, m, 100, 40)
+
+	resp := make(chan bool, 1)
+	m = send(t, m, showConfirmMsg{prompt: "Sure?", resp: resp})
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+
+	select {
+	case got := <-resp:
+		if got {
+			t.Error("resp = true, want false for n key")
+		}
+	default:
+		t.Error("nothing sent to resp channel after n key")
+	}
+}
+
+// TestTUIModel_PendingDiff_ScrollKeysKeepModalOpen verifies that arrow keys do
+// not close the diff modal (pendingDiff must remain set after Up/Down).
+func TestTUIModel_PendingDiff_ScrollKeysKeepModalOpen(t *testing.T) {
+	events := make(chan tuiMsg, 8)
+	m := newTestModel(t, events, make(chan<- string, 1))
+	m = initSize(t, m, 100, 20)
+
+	resp := make(chan bool, 1)
+	// Use enough diff lines to make the viewport scrollable.
+	oldContent := strings.Repeat("old line\n", 40)
+	newContent := strings.Repeat("new line\n", 40)
+	m = send(t, m, showDiffMsg{old: oldContent, new: newContent, filename: "f.go", resp: resp})
+
+	m = send(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.pendingDiff == nil {
+		t.Error("pendingDiff cleared by Up key — modal should remain open")
+	}
+
+	m = send(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.pendingDiff == nil {
+		t.Error("pendingDiff cleared by Down key — modal should remain open")
+	}
+}
+
 func TestTUIModel_MouseWheelDown(t *testing.T) {
 	events := make(chan tuiMsg, 8)
 	m := newTestModel(t, events, make(chan<- string, 1))

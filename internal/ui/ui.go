@@ -26,6 +26,12 @@ func colorize(text, color string) string {
 	return color + text + ColorReset
 }
 
+// RenderDiff returns an ANSI-coloured diff string without printing to stdout.
+// Used by the TUI to display diffs inside the alt-screen modal.
+func RenderDiff(oldContent, newContent, filename string) string {
+	return generateDiff(oldContent, newContent, filename)
+}
+
 func generateDiff(oldContent, newContent, filename string) string {
 	oldLines := strings.Split(oldContent, "\n")
 	newLines := strings.Split(newContent, "\n")

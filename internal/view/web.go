@@ -26,7 +26,9 @@ func (v *WebView) ShowDiffAndConfirm(_, _, _ string) (bool, error) {
 func (v *WebView) Confirm(_ string) (bool, error) {
 	return false, fmt.Errorf("web view: not implemented")
 }
-func (v *WebView) BeginStream()      {}
+func (v *WebView) BeginStream()         {}
+func (v *WebView) WriteThinking(_ string) {}
 func (v *WebView) UpdateStatus(_ Status) {}
 func (v *WebView) Run(_ func()) error    { return fmt.Errorf("web view: not yet implemented") }
 func (v *WebView) Stop()                 {}
+func (v *WebView) IsCLI() bool           { return false }

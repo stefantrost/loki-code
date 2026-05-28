@@ -62,7 +62,15 @@ type View interface {
 	//   Web:  starts HTTP+WS server; runs fn in a goroutine.
 	Run(fn func()) error
 
+	// WriteThinking routes reasoning/thinking tokens before the main response.
+	// No-op for models/providers that don't emit reasoning content.
+	WriteThinking(token string)
+
 	// Stop tears down the view (quit the tea.Program, close WS, etc.).
 	// Safe to call multiple times.
 	Stop()
+
+	// IsCLI reports whether this view is a plain CLI (non-TUI) view.
+	// Used to gate startup diagnostics that must not appear in TUI alt-screen.
+	IsCLI() bool
 }

@@ -24,6 +24,7 @@ type baseClient struct {
 	httpClient         *http.Client
 	outputWriter       io.Writer // nil → io.Discard; content tokens
 	systemWriter       io.Writer // nil → io.Discard; tool-status blocks
+	thinkingWriter     io.Writer // nil → io.Discard; reasoning/thinking tokens
 	onStreamStart      func()    // nil → no-op; called at top of StreamChatWithHistory
 }
 
@@ -127,6 +128,19 @@ func (c *baseClient) getSystemWriter() io.Writer {
 	return io.Discard
 }
 
+// SetThinkingWriter redirects reasoning/thinking tokens to w. Pass nil to
+// discard. The agent sets this before each StreamChat and clears it after.
+func (c *baseClient) SetThinkingWriter(w io.Writer) { c.thinkingWriter = w }
+
+// getThinkingWriter returns the active thinking writer, falling back to
+// io.Discard when none is set (most models, or before agent wires it up).
+func (c *baseClient) getThinkingWriter() io.Writer {
+	if c.thinkingWriter != nil {
+		return c.thinkingWriter
+	}
+	return io.Discard
+}
+
 // SetStreamStartCallback registers fn to be called at the top of each
 // StreamChatWithHistory invocation. Pass nil to clear it.
 func (c *baseClient) SetStreamStartCallback(fn func()) { c.onStreamStart = fn }
@@ -138,10 +152,6 @@ func (c *baseClient) notifyStreamStart() {
 		c.onStreamStart()
 	}
 }
-
-// toolBoxWidth is the fixed inner width of the tool-call box drawn in the chat
-// pane. Wide enough to fit long file paths on an 80-col terminal with sidebar.
-const toolBoxWidth = 64
 
 // handleToolCalls executes every tool call in the assistant message, appends
 // the results to context, and issues a follow-up streaming request via the
@@ -159,34 +169,16 @@ func (c *baseClient) handleToolCalls(self streamer, assistantMessage ChatMessage
 		slog.Debug("Processing tool call", "index", i, "tool_id", toolCall.ID,
 			"tool_name", name, "tool_arguments", toolCall.Function.Arguments)
 
-		// ── Top border ──────────────────────────────────────────────────
-		//   ┌─ 🔧 tool_name ──────────────────────────────────────────┐
-		label := fmt.Sprintf("─ 🔧 %s ", name)
-		labelRunes := 5 + len([]rune(name)) // "─ 🔧 <name> "
-		fill := toolBoxWidth - labelRunes - 1
-		if fill < 1 {
-			fill = 1
-		}
-		fmt.Fprintf(sw, "\n┌%s%s┐\n", label, strings.Repeat("─", fill))
-
-		// ── Argument lines ────────────────────────────────────────────
-		//   │ key: value                                               │
+		parts := make([]string, 0, len(toolCall.Function.Arguments))
 		for k, v := range toolCall.Function.Arguments {
-			line := fmt.Sprintf("%s: %v", k, v)
-			runes := []rune(line)
+			part := fmt.Sprintf("%s: %v", k, v)
+			runes := []rune(part)
 			if len(runes) > 400 {
-				runes = append(runes[:399], '…')
-				line = string(runes)
+				part = string(append(runes[:399], '…'))
 			}
-			pad := toolBoxWidth - len([]rune(line))
-			if pad < 0 {
-				pad = 0
-			}
-			fmt.Fprintf(sw, "│ %s%s │\n", line, strings.Repeat(" ", pad))
+			parts = append(parts, part)
 		}
-
-		// ── Bottom border ─────────────────────────────────────────────
-		fmt.Fprintf(sw, "└%s┘\n", strings.Repeat("─", toolBoxWidth+2))
+		fmt.Fprintf(sw, "\n🔧 %s  %s\n", name, strings.Join(parts, ", "))
 
 		// ── Execute ───────────────────────────────────────────────────
 		result, err := c.toolExecutor(toolCall, planMode)

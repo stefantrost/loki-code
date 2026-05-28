@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -43,6 +44,7 @@ func (v *mockView) ReadInput(_ string) (string, error) {
 }
 
 func (v *mockView) WriteToken(t string)           { v.tokens = append(v.tokens, t) }
+func (v *mockView) WriteThinking(_ string)        {}
 func (v *mockView) CommitMessage(_, c string)     { v.committed = append(v.committed, c) }
 func (v *mockView) WriteSystem(m string)          { v.system = append(v.system, m) }
 func (v *mockView) BeginStream()                  {}
@@ -50,6 +52,7 @@ func (v *mockView) UpdateStatus(s view.Status)    { v.statuses = append(v.status
 func (v *mockView) ShowDiffAndConfirm(_, _, _ string) (bool, error) { return true, nil }
 func (v *mockView) Confirm(_ string) (bool, error) { return true, nil }
 func (v *mockView) Stop()                          { v.stopped = true }
+func (v *mockView) IsCLI() bool                    { return false }
 
 // containsSystem returns true if any element of v.system contains substr.
 func (v *mockView) containsSystem(substr string) bool {
@@ -91,6 +94,7 @@ func (c *mockClient) StreamChat(input string) error {
 func (c *mockClient) StreamChatWithHistory(_ []clients.ChatMessage) error { return nil }
 
 func (c *mockClient) SetOutputWriter(w io.Writer)       { c.outputWriter = w }
+func (c *mockClient) SetThinkingWriter(_ io.Writer)     {}
 func (c *mockClient) SetSystemWriter(w io.Writer)       { c.systemWriter = w }
 func (c *mockClient) SetStreamStartCallback(fn func())  { c.onStart = fn }
 
@@ -120,7 +124,7 @@ func (c *mockClient) SetTruncator(_ clients.TruncationPolicy) {}
 
 func TestAgent_ExitCommand(t *testing.T) {
 	mv := newMockView("exit")
-	err := Run(&mockClient{}, mv)
+	err := Run(context.Background(), &mockClient{}, mv)
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -131,7 +135,7 @@ func TestAgent_ExitCommand(t *testing.T) {
 
 func TestAgent_QuitCommand(t *testing.T) {
 	mv := newMockView("quit")
-	if err := Run(&mockClient{}, mv); err != nil {
+	if err := Run(context.Background(), &mockClient{}, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if !mv.stopped {
@@ -142,14 +146,14 @@ func TestAgent_QuitCommand(t *testing.T) {
 func TestAgent_ReadInputEOF(t *testing.T) {
 	// Channel already closed — ReadInput returns EOF immediately.
 	mv := newMockView() // no inputs; channel closed
-	if err := Run(&mockClient{}, mv); err != nil {
+	if err := Run(context.Background(), &mockClient{}, mv); err != nil {
 		t.Fatalf("Run returned unexpected error on EOF: %v", err)
 	}
 }
 
 func TestAgent_EmptyInputSkipped(t *testing.T) {
 	mv := newMockView("", "   ", "exit")
-	if err := Run(&mockClient{}, mv); err != nil {
+	if err := Run(context.Background(), &mockClient{}, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	// No user-prompt separator should have been written for blank inputs.
@@ -162,7 +166,7 @@ func TestAgent_EmptyInputSkipped(t *testing.T) {
 
 func TestAgent_SlashClear(t *testing.T) {
 	mv := newMockView("/clear", "exit")
-	if err := Run(&mockClient{}, mv); err != nil {
+	if err := Run(context.Background(), &mockClient{}, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if !mv.containsSystem("✓ Context cleared") {
@@ -172,7 +176,7 @@ func TestAgent_SlashClear(t *testing.T) {
 
 func TestAgent_SlashStats(t *testing.T) {
 	mv := newMockView("/stats", "exit")
-	if err := Run(&mockClient{}, mv); err != nil {
+	if err := Run(context.Background(), &mockClient{}, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if !mv.containsSystem("📊 Context") {
@@ -183,7 +187,7 @@ func TestAgent_SlashStats(t *testing.T) {
 func TestAgent_SlashPlanAndExecute(t *testing.T) {
 	mc := &mockClient{}
 	mv := newMockView("/plan", "/execute", "exit")
-	if err := Run(mc, mv); err != nil {
+	if err := Run(context.Background(), mc, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if mc.planMode {
@@ -200,7 +204,7 @@ func TestAgent_SlashPlanAndExecute(t *testing.T) {
 func TestAgent_SlashPlanAlreadyActive(t *testing.T) {
 	mc := &mockClient{planMode: true}
 	mv := newMockView("/plan", "exit")
-	if err := Run(mc, mv); err != nil {
+	if err := Run(context.Background(), mc, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if !mv.containsSystem("Already in plan mode") {
@@ -210,7 +214,7 @@ func TestAgent_SlashPlanAlreadyActive(t *testing.T) {
 
 func TestAgent_SlashExecuteNotInPlanMode(t *testing.T) {
 	mv := newMockView("/execute", "exit")
-	if err := Run(&mockClient{}, mv); err != nil {
+	if err := Run(context.Background(), &mockClient{}, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if !mv.containsSystem("Not in plan mode") {
@@ -221,7 +225,7 @@ func TestAgent_SlashExecuteNotInPlanMode(t *testing.T) {
 func TestAgent_SlashConciseVerbose(t *testing.T) {
 	mc := &mockClient{}
 	mv := newMockView("/concise", "/verbose", "exit")
-	if err := Run(mc, mv); err != nil {
+	if err := Run(context.Background(), mc, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if mc.conciseMode {
@@ -234,7 +238,7 @@ func TestAgent_SlashConciseVerbose(t *testing.T) {
 
 func TestAgent_SlashMode(t *testing.T) {
 	mv := newMockView("/mode", "exit")
-	if err := Run(&mockClient{}, mv); err != nil {
+	if err := Run(context.Background(), &mockClient{}, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if !mv.containsSystem("Current mode") {
@@ -245,7 +249,7 @@ func TestAgent_SlashMode(t *testing.T) {
 func TestAgent_SlashTask(t *testing.T) {
 	mc := &mockClient{}
 	mv := newMockView("/task refactor auth", "/task", "exit")
-	if err := Run(mc, mv); err != nil {
+	if err := Run(context.Background(), mc, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if mc.task != "refactor auth" {
@@ -261,7 +265,7 @@ func TestAgent_SlashTask(t *testing.T) {
 
 func TestAgent_SlashTaskNoArg(t *testing.T) {
 	mv := newMockView("/task", "exit") // no active task
-	if err := Run(&mockClient{}, mv); err != nil {
+	if err := Run(context.Background(), &mockClient{}, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if !mv.containsSystem("No active task") {
@@ -272,7 +276,7 @@ func TestAgent_SlashTaskNoArg(t *testing.T) {
 func TestAgent_SlashComplete(t *testing.T) {
 	mc := &mockClient{task: "some task"}
 	mv := newMockView("/complete", "exit")
-	if err := Run(mc, mv); err != nil {
+	if err := Run(context.Background(), mc, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if mc.task != "" {
@@ -285,7 +289,7 @@ func TestAgent_SlashComplete(t *testing.T) {
 
 func TestAgent_SlashCompleteNoTask(t *testing.T) {
 	mv := newMockView("/complete", "exit")
-	if err := Run(&mockClient{}, mv); err != nil {
+	if err := Run(context.Background(), &mockClient{}, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if !mv.containsSystem("No active task to complete") {
@@ -295,7 +299,7 @@ func TestAgent_SlashCompleteNoTask(t *testing.T) {
 
 func TestAgent_SlashCompactNotReady(t *testing.T) {
 	mv := newMockView("/compact", "exit")
-	if err := Run(&mockClient{}, mv); err != nil {
+	if err := Run(context.Background(), &mockClient{}, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if !mv.containsSystem("not ready for compacting") {
@@ -306,7 +310,7 @@ func TestAgent_SlashCompactNotReady(t *testing.T) {
 func TestAgent_StreamResponse(t *testing.T) {
 	mc := &mockClient{}
 	mv := newMockView("hello", "exit")
-	if err := Run(mc, mv); err != nil {
+	if err := Run(context.Background(), mc, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	// CommitMessage should have been called with the accumulated "response" token.
@@ -328,7 +332,7 @@ func TestAgent_StreamResponse(t *testing.T) {
 
 func TestAgent_UpdateStatusCalled(t *testing.T) {
 	mv := newMockView("exit")
-	if err := Run(&mockClient{}, mv); err != nil {
+	if err := Run(context.Background(), &mockClient{}, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if len(mv.statuses) == 0 {
@@ -339,7 +343,7 @@ func TestAgent_UpdateStatusCalled(t *testing.T) {
 func TestAgent_StreamError(t *testing.T) {
 	mc := &mockClient{streamErr: fmt.Errorf("transport failure")}
 	mv := newMockView("hello", "exit")
-	if err := Run(mc, mv); err != nil {
+	if err := Run(context.Background(), mc, mv); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if !mv.containsSystem("⚠️  Error: transport failure") {

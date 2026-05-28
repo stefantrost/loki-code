@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"    // allow: animated waiting indicator
 	"github.com/charmbracelet/bubbles/textinput"  // allow: input field component
 	"github.com/charmbracelet/bubbles/viewport"   // allow: scrollable chat pane
 	tea "github.com/charmbracelet/bubbletea"      // allow: TUI event loop
@@ -15,7 +16,10 @@ import (
 	"loki-code/internal/ui"
 )
 
-const tuiSidebarWidth = 24
+const (
+	tuiSidebarWidth  = 24
+	modalFooterLines = 2 // 1 border line + 1 content line
+)
 
 // ── View messages ─────────────────────────────────────────────────────────────
 // All cross-goroutine communication from TUIView methods to the tea.Program
@@ -23,29 +27,42 @@ const tuiSidebarWidth = 24
 
 type tuiMsg interface{ isTUIMsg() }
 
-type tokenMsg    string          // one streaming token
-type systemMsg   string          // tool block / status / context line
-type commitMsg   struct{ content string } // trigger glamour post-render
-type statusMsg   Status           // sidebar refresh
-type beginMsg    struct{}          // re-anchor pre-stream position
-type suspendMsg  struct {          // hand terminal to raw mode for diff/confirm
-	fn     func() (bool, error)
-	result chan<- suspendResult
-}
-type quitMsg struct{} // Stop() was called from outside the program
+type tokenMsg    string                    // one streaming token
+type thinkingMsg string                    // one reasoning/thinking token
+type systemMsg   string                    // tool block / status / context line
+type commitMsg   struct{ content string }  // trigger glamour post-render
+type statusMsg   Status                    // sidebar refresh
+type beginMsg    struct{}                  // re-anchor pre-stream position
+type quitMsg     struct{}                  // Stop() was called from outside the program
 
-func (tokenMsg) isTUIMsg()   {}
-func (systemMsg) isTUIMsg()  {}
-func (commitMsg) isTUIMsg()  {}
-func (statusMsg) isTUIMsg()  {}
-func (beginMsg) isTUIMsg()   {}
-func (suspendMsg) isTUIMsg() {}
-func (quitMsg) isTUIMsg()    {}
+func (tokenMsg) isTUIMsg()    {}
+func (thinkingMsg) isTUIMsg() {}
+func (systemMsg) isTUIMsg()   {}
+func (commitMsg) isTUIMsg()   {}
+func (statusMsg) isTUIMsg()   {}
+func (beginMsg) isTUIMsg()    {}
+func (quitMsg) isTUIMsg()     {}
 
-type suspendResult struct {
-	ok  bool
-	err error
+// showDiffMsg and showConfirmMsg are sent via p.Send() (not the events channel)
+// to request an in-TUI confirmation modal. The calling goroutine blocks on resp.
+type showDiffMsg struct {
+	old, new, filename string
+	resp               chan bool
 }
+type showConfirmMsg struct {
+	prompt string
+	resp   chan bool
+}
+
+// streamPhase tracks which phase of model output the TUI is currently in.
+type streamPhase int
+
+const (
+	phaseIdle     streamPhase = iota // no active stream
+	phaseWaiting                     // BeginStream fired, no tokens yet
+	phaseThinking                    // reasoning tokens arriving
+	phaseStreaming                    // response tokens arriving
+)
 
 // listenForEvents reads one event from the channel and returns it as a
 // tea.Msg. Update re-queues this Cmd after every event to keep the loop live.
@@ -112,6 +129,9 @@ func (v *TUIView) ReadInput(_ string) (string, error) {
 // WriteToken sends a streaming token to the tea program.
 func (v *TUIView) WriteToken(token string) { v.events <- tokenMsg(token) }
 
+// WriteThinking sends a reasoning/thinking token to the tea program.
+func (v *TUIView) WriteThinking(token string) { v.events <- thinkingMsg(token) }
+
 // CommitMessage triggers a glamour re-render of the full response.
 func (v *TUIView) CommitMessage(_, fullContent string) {
 	v.events <- commitMsg{content: fullContent}
@@ -120,26 +140,21 @@ func (v *TUIView) CommitMessage(_, fullContent string) {
 // WriteSystem appends a system/status line (tool blocks, context stats, etc.).
 func (v *TUIView) WriteSystem(msg string) { v.events <- systemMsg(msg) }
 
-// ShowDiffAndConfirm suspends the TUI to show the diff on the raw terminal.
+// ShowDiffAndConfirm sends the diff to the TUI event loop for display as an
+// in-TUI modal and blocks until the user responds. Nothing is written to stdout
+// so the terminal scrollback is clean after the session ends.
 func (v *TUIView) ShowDiffAndConfirm(old, newContent, filename string) (bool, error) {
-	result := make(chan suspendResult, 1)
-	v.events <- suspendMsg{
-		fn:     func() (bool, error) { return ui.ShowDiffAndConfirm(old, newContent, filename) },
-		result: result,
-	}
-	r := <-result
-	return r.ok, r.err
+	resp := make(chan bool, 1)
+	v.program.Send(showDiffMsg{old: old, new: newContent, filename: filename, resp: resp})
+	return <-resp, nil
 }
 
-// Confirm suspends the TUI to show a y/n prompt on the raw terminal.
+// Confirm sends a y/n prompt to the TUI event loop and blocks until the user
+// responds. Nothing is written to stdout.
 func (v *TUIView) Confirm(prompt string) (bool, error) {
-	result := make(chan suspendResult, 1)
-	v.events <- suspendMsg{
-		fn:     func() (bool, error) { return ui.PromptUser(prompt) },
-		result: result,
-	}
-	r := <-result
-	return r.ok, r.err
+	resp := make(chan bool, 1)
+	v.program.Send(showConfirmMsg{prompt: prompt, resp: resp})
+	return <-resp, nil
 }
 
 // UpdateStatus refreshes the sidebar.
@@ -170,6 +185,8 @@ func (v *TUIView) Stop() {
 	})
 }
 
+func (v *TUIView) IsCLI() bool { return false }
+
 // ── Bubble Tea model ──────────────────────────────────────────────────────────
 
 type tuiModel struct {
@@ -191,6 +208,19 @@ type tuiModel struct {
 
 	ready        bool  // true after first WindowSizeMsg
 	lastScrollMs int64 // unix-ms of last WheelUp/WheelDown; used to filter ANSI residue
+
+	// streaming phase + animated indicator
+	spinner     spinner.Model
+	streamPhase streamPhase
+
+	// reasoning/thinking content (OpenAI-compatible models with reasoning_content)
+	thinkBuf        strings.Builder
+	thinkDone       bool // true once first regular token arrived; block is collapsed
+	thinkTokenCount int  // rune count at collapse time, for the summary line
+
+	// in-TUI confirmation modals (non-nil while awaiting user response)
+	pendingDiff    *showDiffMsg
+	pendingConfirm *showConfirmMsg
 }
 
 func newModel(events <-chan tuiMsg, inputCh chan<- string, renderer *glamour.TermRenderer) *tuiModel {
@@ -200,8 +230,12 @@ func newModel(events <-chan tuiMsg, inputCh chan<- string, renderer *glamour.Ter
 	ti.CharLimit = 4096
 	ti.Width = 80
 
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+
 	return &tuiModel{
 		input:    ti,
+		spinner:  sp,
 		events:   events,
 		inputCh:  inputCh,
 		renderer: renderer,
@@ -237,6 +271,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── Keyboard ─────────────────────────────────────────────────────────
 	case tea.KeyMsg:
+		if handled, cmd := m.handlePendingKey(msg); handled {
+			return m, cmd
+		}
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			return m, tea.Quit
@@ -279,21 +316,19 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 
 	// ── Events from TUIView methods ───────────────────────────────────────
+	case thinkingMsg:
+		cmds = append(cmds, m.handleThinkingMsg(msg)...)
+
+	case spinner.TickMsg:
+		// tea-internal message — no listenForEvents re-arm needed.
+		if m.streamPhase != phaseIdle {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+
 	case tokenMsg:
-		m.streamBuf.WriteString(string(msg))
-		// Glamour-render the accumulated buffer on every token so live streaming
-		// text looks identical to the final committed output (no raw **bold** etc.).
-		rendered, err := m.renderer.Render(m.streamBuf.String())
-		if err != nil {
-			rendered = m.streamBuf.String()
-		}
-		m.streamRendered = rendered
-		atBottom := m.viewport.AtBottom()
-		m.viewport.SetContent(m.renderContent())
-		if atBottom {
-			m.viewport.GotoBottom()
-		}
-		cmds = append(cmds, listenForEvents(m.events))
+		cmds = append(cmds, m.handleTokenMsg(msg)...)
 
 	case systemMsg:
 		m.lines = append(m.lines, string(msg))
@@ -305,63 +340,28 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, listenForEvents(m.events))
 
 	case beginMsg:
-		// Re-anchor: subsequent tokenMsgs belong to a fresh stream segment.
-		// If tokens accumulated before this anchor point (model text before a
-		// tool call, or thinking output) they must be committed to lines now —
-		// not silently discarded — so they remain visible in the chat history.
-		if m.streamBuf.Len() > 0 {
-			// Reuse the cached glamour render; no need to re-render.
-			committed := m.streamRendered
-			if committed == "" {
-				committed = m.streamBuf.String()
-			}
-			// INSERT at m.preStreamIdx rather than replacing from it.
-			// Any systemMsg lines (tool-call boxes) that arrived after the
-			// anchor was set live at m.lines[m.preStreamIdx:] — they must be
-			// preserved and shifted right, not overwritten.
-			newLines := make([]string, 0, len(m.lines)+1)
-			newLines = append(newLines, m.lines[:m.preStreamIdx]...)
-			newLines = append(newLines, committed)
-			newLines = append(newLines, m.lines[m.preStreamIdx:]...)
-			m.lines = newLines
-			m.streamBuf.Reset()
-			m.streamRendered = ""
-			m.viewport.SetContent(m.renderContent())
-		}
-		m.preStreamIdx = len(m.lines)
-		cmds = append(cmds, listenForEvents(m.events))
+		cmds = append(cmds, m.handleBeginMsg()...)
 
 	case commitMsg:
-		// Replace everything since preStreamIdx with the glamour-rendered version.
-		rendered, err := m.renderer.Render(msg.content)
-		if err != nil {
-			rendered = msg.content
-		}
-		m.lines = append(m.lines[:m.preStreamIdx], rendered)
-		m.streamBuf.Reset()
-		m.streamRendered = ""
-		atBottom := m.viewport.AtBottom()
-		m.viewport.SetContent(m.renderContent())
-		if atBottom {
-			m.viewport.GotoBottom()
-		}
-		cmds = append(cmds, listenForEvents(m.events))
+		cmds = append(cmds, m.handleCommitMsg(msg)...)
 
 	case statusMsg:
 		m.status = Status(msg)
 		cmds = append(cmds, listenForEvents(m.events))
 
-	case suspendMsg:
-		// Exit alt-screen, run the raw terminal function, re-enter alt-screen.
-		cmds = append(cmds, tea.Sequence(
-			tea.ExitAltScreen,
-			func() tea.Msg {
-				ok, err := msg.fn()
-				msg.result <- suspendResult{ok: ok, err: err}
-				return tea.EnterAltScreen
-			},
-			listenForEvents(m.events),
-		))
+	case showDiffMsg:
+		diff := ui.RenderDiff(msg.old, msg.new, msg.filename)
+		m.viewport.Height = m.height - modalFooterLines
+		m.viewport.SetContent(diff)
+		m.viewport.GotoTop()
+		pending := msg
+		m.pendingDiff = &pending
+		return m, listenForEvents(m.events)
+
+	case showConfirmMsg:
+		pending := msg
+		m.pendingConfirm = &pending
+		return m, listenForEvents(m.events)
 
 	case quitMsg:
 		return m, tea.Quit
@@ -374,12 +374,122 @@ func (m *tuiModel) View() string {
 	if !m.ready {
 		return "Initialising…"
 	}
+	if m.pendingDiff != nil {
+		return m.renderDiffModal()
+	}
+	if m.pendingConfirm != nil {
+		return m.renderConfirmModal()
+	}
 	left := lipgloss.JoinVertical(lipgloss.Left,
 		m.viewport.View(),
 		m.inputView(),
 	)
 	right := m.sidebarView()
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+}
+
+// handleThinkingMsg accumulates a reasoning token and refreshes the viewport.
+func (m *tuiModel) handleThinkingMsg(msg thinkingMsg) []tea.Cmd {
+	m.thinkBuf.WriteString(string(msg))
+	m.streamPhase = phaseThinking
+	atBottom := m.viewport.AtBottom()
+	m.viewport.SetContent(m.renderContent())
+	if atBottom {
+		m.viewport.GotoBottom()
+	}
+	return []tea.Cmd{listenForEvents(m.events)}
+}
+
+// handleTokenMsg processes one streaming content token: collapses the think
+// block on the first token, then accumulates + glamour-renders the stream buf.
+func (m *tuiModel) handleTokenMsg(msg tokenMsg) []tea.Cmd {
+	if !m.thinkDone && m.thinkBuf.Len() > 0 {
+		m.thinkDone = true
+		m.thinkTokenCount = len([]rune(m.thinkBuf.String()))
+	}
+	m.streamPhase = phaseStreaming
+	m.streamBuf.WriteString(string(msg))
+	// Glamour-render the accumulated buffer on every token so live streaming
+	// text looks identical to the final committed output (no raw **bold** etc.).
+	rendered, err := m.renderer.Render(m.streamBuf.String())
+	if err != nil {
+		rendered = m.streamBuf.String()
+	}
+	m.streamRendered = rendered
+	atBottom := m.viewport.AtBottom()
+	m.viewport.SetContent(m.renderContent())
+	if atBottom {
+		m.viewport.GotoBottom()
+	}
+	return []tea.Cmd{listenForEvents(m.events)}
+}
+
+// handleBeginMsg re-anchors the pre-stream position. Promotes any pending
+// thought summary and stream buffer into m.lines so they survive the reset.
+func (m *tuiModel) handleBeginMsg() []tea.Cmd {
+	// Promote any pending thought summary so it persists across tool-call re-anchors.
+	if m.thinkBuf.Len() > 0 {
+		count := m.thinkTokenCount
+		if count == 0 {
+			count = len([]rune(m.thinkBuf.String()))
+		}
+		m.lines = append(m.lines, fmt.Sprintf("╌ 💭 Thought (%d tokens) ╌", count))
+	}
+	m.thinkBuf.Reset()
+	m.thinkDone = false
+	m.thinkTokenCount = 0
+	m.streamPhase = phaseWaiting
+
+	if m.streamBuf.Len() > 0 {
+		committed := m.streamRendered
+		if committed == "" {
+			committed = m.streamBuf.String()
+		}
+		// INSERT at m.preStreamIdx so tool-call box lines (systemMsg lines that
+		// arrived after the anchor) shift right rather than being overwritten.
+		newLines := make([]string, 0, len(m.lines)+1)
+		newLines = append(newLines, m.lines[:m.preStreamIdx]...)
+		newLines = append(newLines, committed)
+		newLines = append(newLines, m.lines[m.preStreamIdx:]...)
+		m.lines = newLines
+		m.streamBuf.Reset()
+		m.streamRendered = ""
+		m.viewport.SetContent(m.renderContent())
+	}
+	m.preStreamIdx = len(m.lines)
+	return []tea.Cmd{m.spinner.Tick, listenForEvents(m.events)}
+}
+
+// handleCommitMsg finalises a stream segment: promotes the thought summary,
+// glamour-renders the full response, and resets all streaming state.
+func (m *tuiModel) handleCommitMsg(msg commitMsg) []tea.Cmd {
+	m.streamPhase = phaseIdle
+	if m.thinkBuf.Len() > 0 {
+		count := m.thinkTokenCount
+		if count == 0 {
+			count = len([]rune(m.thinkBuf.String()))
+		}
+		m.lines = append(m.lines[:m.preStreamIdx],
+			fmt.Sprintf("╌ 💭 Thought (%d tokens) ╌", count))
+		m.preStreamIdx = len(m.lines)
+	}
+	m.thinkBuf.Reset()
+	m.thinkDone = false
+	m.thinkTokenCount = 0
+
+	rendered, err := m.renderer.Render(msg.content)
+	if err != nil {
+		rendered = msg.content
+	}
+	m.lines = append(m.lines[:m.preStreamIdx], rendered)
+	m.streamBuf.Reset()
+	m.streamRendered = ""
+	atBottom := m.viewport.AtBottom()
+	m.viewport.SetContent(m.renderContent())
+	if atBottom {
+		m.viewport.GotoBottom()
+	}
+	return []tea.Cmd{listenForEvents(m.events)}
 }
 
 // renderContent combines committed lines with the current stream buffer.
@@ -393,6 +503,14 @@ func (m *tuiModel) renderContent() string {
 			sb.WriteByte('\n')
 		}
 	}
+	// Show live thinking content while it's still arriving; once the first
+	// regular token arrives (thinkDone=true), the collapsed summary is already
+	// appended to m.lines so nothing extra is needed here.
+	if m.thinkBuf.Len() > 0 && !m.thinkDone {
+		sb.WriteString("💭 Thinking…\n")
+		sb.WriteString(m.thinkBuf.String())
+		sb.WriteByte('\n')
+	}
 	if m.streamBuf.Len() > 0 {
 		sb.WriteString(m.streamRendered)
 	}
@@ -405,6 +523,69 @@ func (m *tuiModel) inputView() string {
 		BorderTop(true).
 		Width(m.width - tuiSidebarWidth).
 		Render(" > " + m.input.View())
+}
+
+// handlePendingKey intercepts key events when a confirmation modal is active.
+// Returns (true, cmd) when the key was consumed; (false, nil) otherwise.
+func (m *tuiModel) handlePendingKey(msg tea.KeyMsg) (bool, tea.Cmd) {
+	if m.pendingDiff != nil {
+		switch msg.Type {
+		case tea.KeyCtrlC:
+			m.pendingDiff.resp <- false
+			m.pendingDiff = nil
+			m.viewport.Height = m.height - lipgloss.Height(m.inputView())
+			m.viewport.SetContent(m.renderContent())
+			return true, tea.Quit
+		case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown:
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return true, tea.Batch(cmd, listenForEvents(m.events))
+		}
+		if msg.String() == "y" || msg.String() == "Y" {
+			m.pendingDiff.resp <- true
+		} else {
+			m.pendingDiff.resp <- false
+		}
+		m.pendingDiff = nil
+		m.viewport.Height = m.height - lipgloss.Height(m.inputView())
+		m.viewport.SetContent(m.renderContent())
+		m.viewport.GotoBottom()
+		return true, listenForEvents(m.events)
+	}
+	if m.pendingConfirm != nil {
+		switch msg.Type {
+		case tea.KeyCtrlC:
+			m.pendingConfirm.resp <- false
+			m.pendingConfirm = nil
+			return true, tea.Quit
+		}
+		if msg.String() == "y" || msg.String() == "Y" {
+			m.pendingConfirm.resp <- true
+		} else {
+			m.pendingConfirm.resp <- false
+		}
+		m.pendingConfirm = nil
+		return true, listenForEvents(m.events)
+	}
+	return false, nil
+}
+
+func (m *tuiModel) renderDiffModal() string {
+	footer := lipgloss.NewStyle().
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderTop(true).
+		Width(m.width - 2).
+		Render("  Apply this change?  [y] yes  [any key] cancel")
+	return lipgloss.JoinVertical(lipgloss.Left, m.viewport.View(), footer)
+}
+
+func (m *tuiModel) renderConfirmModal() string {
+	footer := lipgloss.NewStyle().
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderTop(true).
+		Width(m.width - 2).
+		Render(fmt.Sprintf("  %s  [y] yes  [any key] cancel", m.pendingConfirm.prompt))
+	return lipgloss.JoinVertical(lipgloss.Left, m.viewport.View(), footer)
 }
 
 func (m *tuiModel) sidebarView() string {
@@ -422,7 +603,21 @@ func (m *tuiModel) sidebarView() string {
 	fmt.Fprintf(&sb, "────────────────\n\n")
 	fmt.Fprintf(&sb, "Mode\n%s\n\n", strings.ToUpper(m.status.Mode))
 	fmt.Fprintf(&sb, "────────────────\n\n")
-	fmt.Fprintf(&sb, "Response\n%s\n\n", strings.ToUpper(m.status.Response))
+	// While a stream is active, replace the Response row with a live Status row.
+	if m.streamPhase != phaseIdle {
+		var label string
+		switch m.streamPhase {
+		case phaseWaiting:
+			label = "Waiting…"
+		case phaseThinking:
+			label = "Thinking…"
+		case phaseStreaming:
+			label = "Streaming…"
+		}
+		fmt.Fprintf(&sb, "Status\n%s %s\n\n", m.spinner.View(), label)
+	} else {
+		fmt.Fprintf(&sb, "Response\n%s\n\n", strings.ToUpper(m.status.Response))
+	}
 	fmt.Fprintf(&sb, "────────────────\n\n")
 	fmt.Fprintf(&sb, "Task\n%s\n", task)
 

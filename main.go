@@ -1,14 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"loki-code/clients"
 	"loki-code/internal/agent"
@@ -18,40 +17,56 @@ import (
 	"loki-code/internal/view"
 )
 
+var version = "dev"
+
+const (
+	logDir  = "logs"
+	logFile = "loki-code.log"
+)
+
+func newLogger(w io.Writer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
 // setupLogger opens logs/loki-code.log (creating the directory if needed) and
-// configures slog to write there.  The log file is at DEBUG level regardless of
-// the debug flag so every run is fully auditable; the debug flag additionally
-// tees output to stderr for CLI users who want live visibility.
-// Returns the open log file so the caller can close it on exit (nil on error).
+// configures slog to write there. The log file is always at DEBUG level so
+// every run is fully auditable; debug mode additionally tees output to stderr.
+// Returns the open log file so the caller can defer Close (nil on error).
 func setupLogger(debug bool) *os.File {
-	if err := os.MkdirAll("logs", 0750); err != nil {
-		// Can't create logs dir — fall back to stderr only.
-		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		})))
+	if err := os.MkdirAll(logDir, 0750); err != nil {
+		slog.SetDefault(newLogger(os.Stderr))
 		return nil
 	}
 
-	lf, err := os.OpenFile(filepath.Join("logs", "loki-code.log"),
+	lf, err := os.OpenFile(filepath.Join(logDir, logFile),
 		os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
-		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		})))
+		slog.SetDefault(newLogger(os.Stderr))
 		return nil
 	}
 
-	// Always capture DEBUG in the file; optionally tee to stderr in debug mode.
-	// The tee is suppressed later for TUI mode (alt-screen would show raw log
-	// lines) — see the view-selection block in main().
 	var w io.Writer = lf
 	if debug {
 		w = io.MultiWriter(lf, os.Stderr)
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	})))
+	slog.SetDefault(newLogger(w))
 	return lf
+}
+
+// enableStderrTee rewires the default logger to tee to stderr in addition to
+// the existing log file. Called after config load when cfg.Debug is true but
+// --debug was not passed on the CLI (env-based debug activation).
+func enableStderrTee(lf *os.File) {
+	if lf == nil {
+		return
+	}
+	slog.SetDefault(newLogger(io.MultiWriter(lf, os.Stderr)))
+}
+
+func fatal(msg string, err error) {
+	slog.Error(msg, "error", err)
+	fmt.Fprintf(os.Stderr, "Error: %s: %v\n", msg, err)
+	os.Exit(1)
 }
 
 func main() {
@@ -62,12 +77,18 @@ func main() {
 	configFile := flag.String("config", "", "Configuration file path (default: llm.env)")
 	bearerToken := flag.String("token", "", "Bearer token for authentication")
 	listModels := flag.Bool("list-models", false, "List available models and exit")
-	debugFlag := flag.Bool("debug", false, "Enable debug logging")
+	debugFlag := flag.Bool("debug", false, "Enable debug logging to stderr")
 	conciseFlag := flag.Bool("concise", false, "Start in concise mode (brief responses)")
 	conciseShort := flag.Bool("c", false, "Start in concise mode (short form)")
 	createConfig := flag.Bool("create-config", false, "Create example configuration file")
+	versionFlag := flag.Bool("version", false, "Print version and exit")
 
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Printf("loki-code %s\n", version)
+		return
+	}
 
 	logFile := setupLogger(*debugFlag)
 	if logFile != nil {
@@ -80,21 +101,18 @@ func main() {
 		if *configFile != "" {
 			configPath = *configFile
 		}
-
 		if err := config.CreateExampleConfig(configPath); err != nil {
-			slog.Error("Error creating config file", "error", err)
-			os.Exit(1)
+			fatal("Error creating config file", err)
 		}
-
 		fmt.Printf("✓ Created example configuration file: %s\n", configPath)
 		fmt.Println("Edit the file with your API settings and run loki-code again.")
-		os.Exit(0)
+		return
 	}
 
 	cfg, err := config.LoadConfig(*configFile)
 	if err != nil {
 		slog.Error("Error loading configuration", "error", err)
-		fmt.Println("Run 'loki-code --create-config' to create an example configuration file.")
+		fmt.Fprintln(os.Stderr, "Run 'loki-code --create-config' to create an example configuration file.")
 		os.Exit(1)
 	}
 
@@ -103,33 +121,30 @@ func main() {
 	} else if *modelShort != "" {
 		cfg.ModelName = *modelShort
 	}
-
 	if *baseURL != "" {
 		cfg.BaseURL = *baseURL
 	}
-
 	if *apiType != "" {
 		cfg.APIType = *apiType
 	}
-
 	if *bearerToken != "" {
 		cfg.BearerToken = *bearerToken
 	}
-
 	if *debugFlag {
 		cfg.Debug = true
 	}
 
-	if err := config.ValidateAndFixConfig(&cfg); err != nil {
-		slog.Error("Configuration error", "error", err)
-		os.Exit(1)
+	// Activate stderr tee when debug is set via env/config but not via --debug.
+	if cfg.Debug && !*debugFlag {
+		enableStderrTee(logFile)
 	}
 
-	// Select view early — before any stdout prints — so that TUI mode enters
-	// alt-screen before writing anything to the terminal.  Startup messages
-	// printed to the primary buffer before alt-screen would bleed back into
-	// the user's shell after the TUI session ends, and in some terminal
-	// emulators can cause a phantom second input row.
+	if err := config.ValidateAndFixConfig(&cfg); err != nil {
+		fatal("Configuration error", err)
+	}
+
+	cfg.Truncator = tools.SmartTruncate
+
 	var v view.View
 	tuiView, tuiErr := view.NewTUIView()
 	if tuiErr != nil {
@@ -137,80 +152,50 @@ func main() {
 		v = view.NewCLIView()
 	} else {
 		v = tuiView
-		// TUI mode: drop the stderr tee (if --debug added one) so raw log lines
-		// don't bleed into the alt-screen renderer.  All output still goes to
-		// logs/loki-code.log — use `tail -f logs/loki-code.log` to watch live.
-		if *debugFlag && logFile != nil {
-			slog.SetDefault(slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{
-				Level: slog.LevelDebug,
-			})))
+		// TUI mode: drop the stderr tee so raw log lines don't bleed into the
+		// alt-screen renderer. Output still goes to logs/loki-code.log.
+		if cfg.Debug && logFile != nil {
+			slog.SetDefault(newLogger(logFile))
 		}
 	}
-	_, isCLI := v.(*view.CLIView)
 
-	// Wire the view's confirm/diff methods into the tools package so that
-	// mutating tools (create_file, update_file, delete_file) use the right
-	// mechanism for the active UI.  In TUI mode this suspends alt-screen
-	// around each prompt; in CLI mode v.Confirm and v.ShowDiffAndConfirm
-	// delegate to the same ui.* helpers the tools package used by default,
-	// so behaviour is unchanged for CLI users.
-	tools.SetConfirmHooks(v.Confirm, v.ShowDiffAndConfirm)
+	runner := tools.NewToolRunner(v.Confirm, v.ShowDiffAndConfirm)
 
 	if *listModels {
 		fmt.Println("Available models:")
-		if strings.ToLower(cfg.APIType) == "ollama" {
-			cmd := exec.Command("ollama", "list")
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			err := cmd.Run()
-			if err != nil {
-				slog.Error("Error running ollama list", "error", err)
-				fmt.Println("Make sure Ollama is installed and running")
-				os.Exit(1)
-			}
-		} else {
-			fmt.Printf("Model listing not supported for API type: %s\n", cfg.APIType)
-			fmt.Printf("Current configured model: %s\n", cfg.ModelName)
+		if err := clients.ListModels(cfg, os.Stdout, os.Stderr); err != nil {
+			fatal("Error listing models", err)
 		}
-		os.Exit(0)
+		return
 	}
 
-	// In CLI mode print startup diagnostics; TUI mode keeps the terminal clean.
-	if isCLI {
+	if v.IsCLI() {
 		fmt.Println("Loki Code - AI Coding Agent")
 		fmt.Printf("Connecting to %s API (%s)...\n", cfg.APIType, cfg.ModelName)
 	}
 
-	// Create context manager with tool provider callback
 	ctxMgr := session.NewContextManager(4000, tools.GetAvailableTools)
 
-	// Create client with callbacks
-	client, err := clients.CreateClient(cfg, ctxMgr, tools.ExecuteToolWithPlanMode, tools.GetAvailableTools)
+	client, err := clients.CreateClient(cfg, ctxMgr, runner.Execute, tools.GetAvailableTools)
 	if err != nil {
-		slog.Error("Error creating client", "error", err)
-		os.Exit(1)
+		fatal("Error creating client", err)
 	}
-	client.SetTruncator(tools.SmartTruncate)
 
-	// Detect and set context window
 	if contextWindow, err := client.DetectContextWindow(); err == nil {
 		ctxMgr.SetMaxTokens(contextWindow)
-		if isCLI {
+		if v.IsCLI() {
 			fmt.Printf("✓ Detected context window: %d tokens (auto-compact at 75%%)\n", contextWindow)
 		}
-	} else {
-		if isCLI {
-			fmt.Printf("⚠️ Could not detect context window: %v\n", err)
-			fmt.Printf("✓ Using default context limit: 4,000 tokens\n")
-		}
+	} else if v.IsCLI() {
+		fmt.Fprintf(os.Stderr, "⚠️  Could not detect context window: %v\n", err)
+		fmt.Println("✓ Using default context limit: 4,000 tokens")
 	}
 
 	if *conciseFlag || *conciseShort {
 		client.EnableConciseMode()
 	}
 
-	if err := agent.Run(client, v); err != nil {
-		slog.Error("Agent error", "error", err)
-		os.Exit(1)
+	if err := agent.Run(context.Background(), client, v); err != nil {
+		fatal("Agent error", err)
 	}
 }

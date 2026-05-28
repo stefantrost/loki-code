@@ -258,29 +258,15 @@ func (c *OpenAIClient) StreamChatWithHistory(messages []ChatMessage) error {
 		}
 
 		for _, choice := range chunk.Choices {
-			// reasoning_content is internal model thought — skip it, don't display or store.
+			if choice.Delta.ReasoningContent != "" {
+				fmt.Fprint(c.getThinkingWriter(), choice.Delta.ReasoningContent)
+			}
 			if choice.Delta.Content != "" {
 				fmt.Fprint(c.getOutputWriter(), choice.Delta.Content)
 				currentMessage.Content += choice.Delta.Content
 			}
 
-			for _, tc := range choice.Delta.ToolCalls {
-				acc, exists := toolChunks[tc.Index]
-				if !exists {
-					acc = &openAIToolCallChunk{Index: tc.Index}
-					toolChunks[tc.Index] = acc
-				}
-				if tc.ID != "" {
-					acc.ID = tc.ID
-				}
-				if tc.Type != "" {
-					acc.Type = tc.Type
-				}
-				if tc.Function.Name != "" {
-					acc.Function.Name = tc.Function.Name
-				}
-				acc.Function.Arguments += tc.Function.Arguments
-			}
+			accumulateToolDeltas(toolChunks, choice.Delta.ToolCalls)
 
 			if choice.FinishReason == "stop" || choice.FinishReason == "tool_calls" {
 				fmt.Fprintln(c.getOutputWriter())
@@ -295,8 +281,20 @@ func (c *OpenAIClient) StreamChatWithHistory(messages []ChatMessage) error {
 				}
 				c.contextManager.AddMessage(currentMessage)
 				return nil
+			} else if choice.FinishReason == "length" {
+				slog.Warn("Stream truncated by context window", "finish_reason", "length",
+					"partial_content_len", len(currentMessage.Content))
+				fmt.Fprintf(c.getSystemWriter(), "⚠️  Response truncated (context window full) — task may be incomplete\n")
+				break
+			} else if choice.FinishReason != "" {
+				slog.Debug("Unrecognised finish_reason", "finish_reason", choice.FinishReason)
 			}
 		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		slog.Error("SSE scanner error", "error", err)
+		return fmt.Errorf("stream read error: %w", err)
 	}
 
 	// [DONE] path — finish_reason may not have fired (some providers omit it).
@@ -308,6 +306,27 @@ func (c *OpenAIClient) StreamChatWithHistory(messages []ChatMessage) error {
 		return c.handleToolCalls(c, currentMessage)
 	}
 	return nil
+}
+
+// accumulateToolDeltas merges incoming tool-call delta fragments into the index-keyed accumulator.
+func accumulateToolDeltas(chunks map[int]*openAIToolCallChunk, deltas []openAIToolCallChunk) {
+	for _, tc := range deltas {
+		acc, exists := chunks[tc.Index]
+		if !exists {
+			acc = &openAIToolCallChunk{Index: tc.Index}
+			chunks[tc.Index] = acc
+		}
+		if tc.ID != "" {
+			acc.ID = tc.ID
+		}
+		if tc.Type != "" {
+			acc.Type = tc.Type
+		}
+		if tc.Function.Name != "" {
+			acc.Function.Name = tc.Function.Name
+		}
+		acc.Function.Arguments += tc.Function.Arguments
+	}
 }
 
 // buildToolCalls converts the index-keyed accumulator into a ToolCall slice,

@@ -35,12 +35,18 @@ func CreateClient(config ClientConfig, ctxMgr ContextManager, toolExec ToolExecu
 		if config.Debug {
 			client.SetDebug(true)
 		}
+		if config.Truncator != nil {
+			client.SetTruncator(config.Truncator)
+		}
 		return client, nil
 
 	case "openai", "openai-compatible":
 		client := NewOpenAIClient(config.BaseURL, config.BearerToken, config.ModelName, ctxMgr, toolExec, toolProvider)
 		if config.Debug {
 			client.SetDebug(true)
+		}
+		if config.Truncator != nil {
+			client.SetTruncator(config.Truncator)
 		}
 		return client, nil
 
